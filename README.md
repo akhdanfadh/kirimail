@@ -1,2 +1,1 @@
-# inbok
-WIP modern email client
+# inbok - WIP modern email client
