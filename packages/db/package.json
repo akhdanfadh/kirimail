@@ -2,6 +2,9 @@
   "name": "@inbok/db",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "db:push": "drizzle-kit push",
     "typecheck": "tsc --noEmit",
@@ -11,8 +14,11 @@
     "format:fix": "oxfmt ."
   },
   "dependencies": {
+    "@inbok/env": "workspace:*",
+    "@t3-oss/env-core": "^0.13.11",
     "drizzle-orm": "^0.45.1",
-    "pg": "^8.20.0"
+    "pg": "^8.20.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
