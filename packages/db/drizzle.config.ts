@@ -16,7 +16,7 @@ if (!databaseUrl) {
 // Currently using migration Option 2 (db:push) for frictionless dev mode.
 // See: https://orm.drizzle.team/docs/migrations
 export default defineConfig({
-  schema: "./src/schema.ts",
+  schema: "./src/schema",
   dialect: "postgresql",
   dbCredentials: { url: databaseUrl },
 });

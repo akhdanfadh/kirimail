@@ -4,6 +4,7 @@ import { onError } from "@orpc/server";
 import { RPCHandler } from "@orpc/server/fetch";
 import { ZodToJsonSchemaConverter } from "@orpc/zod/zod4";
 import { Hono } from "hono";
+import { auth } from "./auth";
 import { rpcRouter } from "./rpc/router";
 
 const apiV1Prefix = "/api/v1";
@@ -46,6 +47,8 @@ apiApp.get(`${apiV1Prefix}/health`, (c) =>
     service: "inbok-web-api",
   }),
 );
+
+apiApp.on(["GET", "POST"], `${apiV1Prefix}/auth/*`, (c) => auth.handler(c.req.raw));
 
 apiApp.use(`${apiV1Prefix}/rpc/*`, async (c, next) => {
   const { matched, response } = await rpcHandler.handle(c.req.raw, {
