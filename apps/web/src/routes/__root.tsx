@@ -1,0 +1,28 @@
+import type { ReactNode } from "react";
+import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
+
+export const Route = createRootRoute({
+  head: () => ({
+    meta: [
+      { charSet: "utf-8" },
+      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { title: "Inbok" },
+    ],
+  }),
+  shellComponent: RootDocument,
+});
+
+function RootDocument({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        {/* All route content is rendered inside the root document shell. */}
+        {children}
+        <Scripts />
+      </body>
+    </html>
+  );
+}

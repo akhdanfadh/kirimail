@@ -2,10 +2,13 @@
   "$schema": "https://www.schemastore.org/package.json",
   "private": true,
   "scripts": {
-    "lint": "oxlint .",
-    "lint:fix": "oxlint --fix .",
-    "format": "oxfmt --check",
-    "format:fix": "oxfmt ."
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "lint:fix": "turbo run lint:fix",
+    "format": "turbo run format",
+    "format:fix": "turbo run format:fix"
   },
   "devDependencies": {
     "oxfmt": "^0.42.0",

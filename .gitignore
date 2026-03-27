@@ -1,2 +1,4 @@
+.tanstack/
 .turbo/
+dist/
 node_modules/
