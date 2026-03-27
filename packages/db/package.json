@@ -1,0 +1,24 @@
+{
+  "name": "@inbok/db",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:push": "drizzle-kit push",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt ."
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.1",
+    "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/pg": "^8.20.0",
+    "dotenv": "^17.3.1",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^6.0.2"
+  }
+}
