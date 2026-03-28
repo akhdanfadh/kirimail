@@ -1,5 +1,5 @@
 {
-  "name": "@inbok/db",
+  "name": "@kirimail/db",
   "private": true,
   "type": "module",
   "exports": {
@@ -14,7 +14,7 @@
     "format:fix": "oxfmt ."
   },
   "dependencies": {
-    "@inbok/env": "workspace:*",
+    "@kirimail/env": "workspace:*",
     "@t3-oss/env-core": "^0.13.11",
     "drizzle-orm": "^0.45.1",
     "pg": "^8.20.0",

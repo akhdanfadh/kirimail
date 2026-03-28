@@ -1,5 +1,5 @@
 {
-  "name": "@inbok/env",
+  "name": "@kirimail/env",
   "private": true,
   "type": "module",
   "exports": {

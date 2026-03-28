@@ -1,1 +1,1 @@
-# inbok - WIP modern email client
+# kirimail - WIP modern email client

@@ -3,15 +3,16 @@ services:
     image: postgres:18-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-inbokadmin}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-inbokpassword}
-      POSTGRES_DB: ${POSTGRES_DB:-inbok}
+      POSTGRES_USER: ${POSTGRES_USER:-kirimailadmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kirimailpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-kirimail}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-inbokadmin} -d ${POSTGRES_DB:-inbok}"]
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kirimailadmin} -d ${POSTGRES_DB:-kirimail}"]
       interval: 10s
       timeout: 5s
       retries: 5

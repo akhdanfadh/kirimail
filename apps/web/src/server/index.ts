@@ -25,7 +25,7 @@ const openApiHandler = new OpenAPIHandler(rpcRouter, {
       schemaConverters: [new ZodToJsonSchemaConverter()],
       specGenerateOptions: {
         info: {
-          title: "Inbok API",
+          title: "Kirimail API",
           version: "1.0.0",
         },
         servers: [{ url: apiV1Prefix }],
@@ -44,7 +44,7 @@ const apiApp = new Hono();
 apiApp.get(`${apiV1Prefix}/health`, (c) =>
   c.json({
     status: "ok",
-    service: "inbok-web-api",
+    service: "kirimail-web-api",
   }),
 );
 

@@ -1,5 +1,5 @@
 {
-  "name": "@inbok/web",
+  "name": "@kirimail/web",
   "private": true,
   "type": "module",
   "imports": {
@@ -16,8 +16,8 @@
   },
   "dependencies": {
     "@better-auth/drizzle-adapter": "^1.5.6",
-    "@inbok/db": "workspace:*",
-    "@inbok/env": "workspace:*",
+    "@kirimail/db": "workspace:*",
+    "@kirimail/env": "workspace:*",
     "@orpc/contract": "^1.13.13",
     "@orpc/openapi": "^1.13.13",
     "@orpc/server": "^1.13.13",

@@ -1,5 +1,5 @@
 import { createEnv } from "@t3-oss/env-core";
-import { loadRuntimeEnvFile } from "@inbok/env";
+import { loadRuntimeEnvFile } from "@kirimail/env";
 import { z } from "zod";
 
 loadRuntimeEnvFile(import.meta.url);
