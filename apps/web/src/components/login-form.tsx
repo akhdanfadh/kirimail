@@ -13,6 +13,7 @@ import { z } from "zod";
 const loginFormSchema = z.object({
   email: z.email("Please enter a valid email address."),
   password: z.string().min(1, "Password is required."),
+  rememberMe: z.boolean(),
 });
 
 export function LoginForm({
@@ -28,6 +29,7 @@ export function LoginForm({
     defaultValues: {
       email: "",
       password: "",
+      rememberMe: true,
     },
     validators: {
       onChange: loginFormSchema,
@@ -39,6 +41,7 @@ export function LoginForm({
       const { error } = await authClient.signIn.email({
         email: value.email,
         password: value.password,
+        rememberMe: value.rememberMe,
       });
       setIsPending(false);
 
@@ -127,6 +130,22 @@ export function LoginForm({
                     </Field>
                   );
                 }}
+              </form.Field>
+              <form.Field name="rememberMe">
+                {(field) => (
+                  <Field orientation="horizontal" className="items-center gap-2">
+                    <input
+                      id="remember-me"
+                      name="rememberMe"
+                      type="checkbox"
+                      className="size-4 rounded border-input"
+                      checked={field.state.value}
+                      onBlur={field.handleBlur}
+                      onChange={(event) => field.handleChange(event.target.checked)}
+                    />
+                    <FieldLabel htmlFor="remember-me">Remember me</FieldLabel>
+                  </Field>
+                )}
               </form.Field>
               {errorMessage ? (
                 <FieldDescription className="text-destructive">{errorMessage}</FieldDescription>
