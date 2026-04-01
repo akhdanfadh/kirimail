@@ -1,6 +1,7 @@
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { db } from "@kirimail/db";
 import { betterAuth } from "better-auth";
+
 import { serverEnv } from "./env";
 
 export const auth = betterAuth({

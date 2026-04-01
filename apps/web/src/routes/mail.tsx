@@ -1,6 +1,7 @@
-import { useState } from "react";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { Mails } from "lucide-react";
+import { useState } from "react";
+
 import { Button } from "@/components/ui/button";
 import { authClient } from "@/lib/auth-client";
 import { getCurrentSessionFn } from "@/server/session";
@@ -34,7 +35,7 @@ function AppPage() {
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col justify-center gap-6 px-4 py-10">
-      <h1 className="flex items-center gap-2 self-start font-semibold text-xl">
+      <h1 className="flex items-center gap-2 self-start text-xl font-semibold">
         <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <Mails className="size-4" />
         </div>

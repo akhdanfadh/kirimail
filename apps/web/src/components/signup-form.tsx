@@ -1,14 +1,15 @@
-import { useState } from "react";
-import { Link, useNavigate } from "@tanstack/react-router";
 import { useForm } from "@tanstack/react-form";
-import { authClient } from "@/lib/auth-client";
-import { getFirstErrorMessage } from "@/lib/form-errors";
-import { cn } from "@/lib/utils";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { useState } from "react";
+import { z } from "zod";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { z } from "zod";
+import { authClient } from "@/lib/auth-client";
+import { getFirstErrorMessage } from "@/lib/form-errors";
+import { cn } from "@/lib/utils";
 
 const signupFormSchema = z
   .object({

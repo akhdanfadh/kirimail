@@ -7,11 +7,11 @@
   },
   "scripts": {
     "db:push": "drizzle-kit push",
-    "typecheck": "tsc --noEmit",
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt .",
     "lint": "oxlint .",
     "lint:fix": "oxlint --fix .",
-    "format": "oxfmt --check .",
-    "format:fix": "oxfmt ."
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@kirimail/env": "workspace:*",

@@ -1,5 +1,5 @@
-import { defineConfig } from "drizzle-kit";
 import { config as loadEnv } from "dotenv";
+import { defineConfig } from "drizzle-kit";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 

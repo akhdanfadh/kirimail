@@ -1,8 +1,9 @@
-import { z } from "zod";
 import { createFileRoute, redirect } from "@tanstack/react-router";
+import { Mails } from "lucide-react";
+import { z } from "zod";
+
 import { LoginForm } from "@/components/login-form";
 import { getCurrentSessionFn } from "@/server/session";
-import { Mails } from "lucide-react";
 
 export const Route = createFileRoute("/sign-in")({
   validateSearch: z.object({

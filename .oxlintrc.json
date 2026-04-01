@@ -1,0 +1,4 @@
+{
+  "ignorePatterns": ["**/dist/**", "**/src/routeTree.gen.ts"],
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "react-perf", "import"]
+}

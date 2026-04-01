@@ -1,4 +1,5 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
+
 import { getCurrentSessionFn } from "@/server/session";
 
 export const Route = createFileRoute("/")({

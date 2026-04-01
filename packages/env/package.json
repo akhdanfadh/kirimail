@@ -5,6 +5,12 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "scripts": {
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt .",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix ."
+  },
   "dependencies": {
     "dotenv": "^17.3.1"
   }
