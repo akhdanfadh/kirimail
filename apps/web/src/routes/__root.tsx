@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 
+import { TooltipProvider } from "@/components/ui/tooltip";
+
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -23,8 +25,7 @@ function RootDocument({ children }: { children: ReactNode }) {
         <HeadContent />
       </head>
       <body>
-        {/* All route content is rendered inside the root document shell. */}
-        {children}
+        <TooltipProvider>{children}</TooltipProvider>
         <Scripts />
       </body>
     </html>

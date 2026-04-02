@@ -1,9 +1,10 @@
-import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
-import { Mails } from "lucide-react";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import { authClient } from "@/lib/auth-client";
+import { MailContent } from "@/components/mail-content";
+import { MailList } from "@/components/mail-list";
+import { MailSidebar } from "@/components/mail-sidebar";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import { getCurrentSessionFn } from "@/server/session";
 
 export const Route = createFileRoute("/mail")({
@@ -21,34 +22,26 @@ export const Route = createFileRoute("/mail")({
 });
 
 function AppPage() {
-  const navigate = useNavigate();
   const { session } = Route.useRouteContext();
-  const [isPending, setIsPending] = useState(false);
-
-  const onSignOut = async () => {
-    setIsPending(true);
-    await authClient.signOut();
-    setIsPending(false);
-
-    await navigate({ to: "/sign-in" });
-  };
+  const [activeView, setActiveView] = useState("inbox");
+  const [activeProfileId, setActiveProfileId] = useState("profile-1");
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col justify-center gap-6 px-4 py-10">
-      <h1 className="flex items-center gap-2 self-start text-xl font-semibold">
-        <div className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground">
-          <Mails className="size-4" />
+    <SidebarProvider>
+      <MailSidebar
+        activeView={activeView}
+        onViewChange={setActiveView}
+        activeProfileId={activeProfileId}
+        onProfileChange={setActiveProfileId}
+        session={session}
+      />
+      <main className="relative flex w-full flex-1 flex-col bg-background">
+        {/* Mobile: mail list only. Desktop: mail list (fixed size) + email detail side by side */}
+        <div className="flex h-svh flex-col md:grid md:grid-cols-[360px_1fr]">
+          <MailList />
+          <MailContent activeView={activeView} />
         </div>
-        Kirimail
-      </h1>
-      <p className="text-muted-foreground">
-        Signed in as {session.user.email}. Protected app shell is active.
-      </p>
-      <div>
-        <Button onClick={onSignOut} disabled={isPending}>
-          {isPending ? "Signing out..." : "Sign Out"}
-        </Button>
-      </div>
-    </main>
+      </main>
+    </SidebarProvider>
   );
 }
