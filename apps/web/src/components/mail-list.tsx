@@ -103,7 +103,7 @@ export function MailList() {
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col border-r">
+    <div className="flex h-full min-h-0 flex-col">
       <header
         ref={headerRef}
         className={cn(
@@ -111,7 +111,10 @@ export function MailList() {
           selectionMode && "border-transparent",
         )}
       >
-        <SidebarTrigger className="text-muted-foreground md:hidden" variant="outline" />
+        <SidebarTrigger
+          className="cursor-pointer text-muted-foreground md:hidden"
+          variant="outline"
+        />
         <Button
           variant="outline"
           size="icon-sm"
