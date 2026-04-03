@@ -55,6 +55,18 @@ export type Tag = {
   children?: Tag[];
 };
 
+export type MockEmail = {
+  id: string;
+  senderName: string;
+  senderInitials: string;
+  timestamp: string;
+  subject: string;
+  snippet: string;
+  bookmarked: boolean;
+  read: boolean;
+  tags?: { label: string; color: string }[];
+};
+
 export type Profile = {
   id: string;
   name: string;
@@ -238,5 +250,139 @@ export const profiles: Profile[] = [
       { id: "tag-16", label: "Ideas", color: "#6366f1", unread: 0 },
       { id: "tag-17", label: "Feedback", color: "#f43f5e", unread: 1 },
     ],
+  },
+];
+
+// --- Mock emails ---
+
+export const mockEmails: MockEmail[] = [
+  {
+    id: "e1",
+    senderName: "Google",
+    senderInitials: "G",
+    timestamp: "19:21",
+    subject: "Security Alert",
+    snippet:
+      "A new sign-in on your account was detected from a Windows device in Jakarta, Indonesia.",
+    bookmarked: false,
+    read: false,
+    tags: [{ label: "Important", color: "#ef4444" }],
+  },
+  {
+    id: "e2",
+    senderName: "OpenAI",
+    senderInitials: "OA",
+    timestamp: "Apr 1",
+    subject: "OpenAI Dev News: GPT-5.9, Plugins in Production, and the Agents SDK",
+    snippet:
+      "See what the latest models can really do — plus a deep dive into the new function-calling improvements and structured outputs.",
+    bookmarked: true,
+    read: false,
+    tags: [{ label: "Education", color: "#84cc16" }],
+  },
+  {
+    id: "e3",
+    senderName: "GitHub",
+    senderInitials: "GH",
+    timestamp: "Mar 31",
+    subject: "Your pull request was merged",
+    snippet:
+      "Pull request #42 has been merged into main by akhdanfadh. 3 files changed, 47 insertions, 12 deletions.",
+    bookmarked: false,
+    read: true,
+  },
+  {
+    id: "e4",
+    senderName: "Stripe",
+    senderInitials: "S",
+    timestamp: "Mar 31",
+    subject: "Your March invoice is ready",
+    snippet:
+      "Invoice #INV-2026-0331 for $49.00 is available. Payment will be automatically charged to your Visa ending in 4242.",
+    bookmarked: false,
+    read: true,
+    tags: [
+      { label: "Finance", color: "#22c55e" },
+      { label: "Invoices", color: "#22c55e" },
+    ],
+  },
+  {
+    id: "e5",
+    senderName: "Linear",
+    senderInitials: "L",
+    timestamp: "Mar 30",
+    subject: "5 issues assigned to you",
+    snippet:
+      "You have new issues in Project Alpha that need attention: KM-128 auth flow, KM-129 sidebar, KM-130 mail list, and 2 more.",
+    bookmarked: false,
+    read: true,
+    tags: [{ label: "Urgent", color: "#f97316" }],
+  },
+  {
+    id: "e6",
+    senderName: "Alice Johnson-Whitfield",
+    senderInitials: "AJ",
+    timestamp: "Mar 30",
+    subject:
+      "Re: Q2 Planning — Updated timeline and resource allocation for the infrastructure migration",
+    snippet:
+      "Sounds good! Let's sync on Thursday afternoon. I've updated the shared doc with the revised estimates and added notes from the stakeholder review.",
+    bookmarked: true,
+    read: true,
+    tags: [
+      { label: "Q2 Infrastructure Migration Planning & Resource Allocation", color: "#3b82f6" },
+    ],
+  },
+  {
+    id: "e7",
+    senderName: "Vercel",
+    senderInitials: "V",
+    timestamp: "Mar 29",
+    subject: "Deployment successful",
+    snippet:
+      "Your project kirimail-web was deployed to production. Build completed in 34s with no errors or warnings.",
+    bookmarked: false,
+    read: true,
+  },
+  {
+    id: "e8",
+    senderName: "Bob Smith",
+    senderInitials: "BS",
+    timestamp: "Mar 29",
+    subject: "Design Review Feedback",
+    snippet:
+      "I've left some comments on the Figma file for the mail list component. Main concern is the spacing between list items on mobile viewports.",
+    bookmarked: false,
+    read: true,
+    tags: [{ label: "Code Reviews & Design Feedback", color: "#a855f7" }],
+  },
+  {
+    id: "e9",
+    senderName: "Hetzner",
+    senderInitials: "H",
+    timestamp: "Mar 28",
+    subject: "Scheduled maintenance for your dedicated server cx41-Helsinki-dc2",
+    snippet:
+      "Scheduled maintenance window for your server on April 5, 2026 between 02:00–04:00 UTC. Expect up to 15 minutes of downtime.",
+    bookmarked: false,
+    read: true,
+    tags: [
+      { label: "Important", color: "#ef4444" },
+      { label: "Utilities", color: "#64748b" },
+      { label: "Insurance", color: "#06b6d4" },
+      { label: "Finance", color: "#22c55e" },
+      { label: "Subscriptions", color: "#8b5cf6" },
+    ],
+  },
+  {
+    id: "e10",
+    senderName: "The Pragmatic Engineer Newsletter by Gergely Orosz",
+    senderInitials: "PE",
+    timestamp: "Mar 28",
+    subject: "This week in tech: Why every startup is building their own email client now",
+    snippet:
+      "Top stories this week: AI-powered developer tools raise $2B in Q1, the return of server-rendered apps, and why email clients are the new to-do apps.",
+    bookmarked: false,
+    read: true,
   },
 ];
