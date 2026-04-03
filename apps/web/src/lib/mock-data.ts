@@ -25,7 +25,7 @@ export type EmailAccount = {
   alias?: string;
 };
 
-export type SystemFolder = {
+export type Mailbox = {
   id: string;
   role: string;
   label: string;
@@ -90,9 +90,9 @@ export function getAccountDisplayName(account: EmailAccount): string {
   return account.alias ?? account.email;
 }
 
-// --- System folders ---
+// --- Mailboxes (role-based, unified across accounts) ---
 
-export const systemFolders: SystemFolder[] = [
+export const mailboxes: Mailbox[] = [
   {
     id: "inbox",
     role: "inbox",
@@ -151,7 +151,7 @@ export const systemFolders: SystemFolder[] = [
   },
 ];
 
-// --- Custom/imported folders per account ---
+// --- Per-account native folders ---
 
 export const accountFolders: AccountFolders[] = [
   {
