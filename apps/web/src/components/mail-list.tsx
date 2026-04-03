@@ -14,10 +14,10 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { mockEmails } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
-import { MailListItem } from "./mail-list-item";
-import { MailPagination } from "./mail-pagination";
-import { MailSearch } from "./mail-search";
-import { MailSelection } from "./mail-selection";
+import { MailListItem } from "./list/item";
+import { MailPagination } from "./list/pagination";
+import { MailSearch } from "./list/search";
+import { MailSelection } from "./list/selection";
 
 /** Orchestrator for the mail list panel. Manages search, selection, bookmark,
  * and pagination state, then composes MailSearch, MailSelection, MailListItem,
