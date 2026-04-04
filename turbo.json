@@ -17,6 +17,9 @@
     "lint:fix": {
       "cache": false
     },
+    "test": {
+      "cache": false
+    },
     "typecheck": {
       "dependsOn": ["^typecheck"]
     }
