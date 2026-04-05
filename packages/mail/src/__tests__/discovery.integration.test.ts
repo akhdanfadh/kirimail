@@ -1,42 +1,18 @@
-import { createTransport } from "nodemailer";
-import { beforeAll, describe, expect, inject, it } from "vitest";
-
-import type { ImapCredentials } from "../types";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { withImapConnection } from "../connection";
 import { discoverMailboxes } from "../discovery";
+import { seedMessage, testCredentials } from "./setup";
 
-function getTestCredentials(): ImapCredentials {
-  return {
-    host: inject("greenmailHost"),
-    port: inject("greenmailImapPort"),
-    secure: false,
-    user: "testuser",
-    pass: "testpass",
-  };
-}
+const creds = () => testCredentials("testuser");
 
-async function seedMessage() {
-  const transport = createTransport({
-    host: inject("greenmailHost"),
-    port: inject("greenmailSmtpPort"),
-    secure: false,
-  });
-  await transport.sendMail({
-    from: "sender@localhost",
-    to: "testuser@localhost",
-    subject: "Test message for discovery",
-    text: "Hello from the integration test.",
-  });
-}
-
-describe("discoverMailboxes (GreenMail integration)", () => {
+describe("discoverMailboxes (Stalwart integration)", () => {
   beforeAll(async () => {
-    await seedMessage();
+    await seedMessage(creds(), { subject: "Test message for discovery" });
   });
 
   it("discovers INBOX with role inbox", async () => {
-    const result = await discoverMailboxes(getTestCredentials());
+    const result = await discoverMailboxes(creds());
 
     const inbox = result.mailboxes.find((mb) => mb.role === "inbox");
 
@@ -45,7 +21,7 @@ describe("discoverMailboxes (GreenMail integration)", () => {
   });
 
   it("includes sync cursor for INBOX", async () => {
-    const result = await discoverMailboxes(getTestCredentials());
+    const result = await discoverMailboxes(creds());
     const inbox = result.mailboxes.find((mb) => mb.role === "inbox");
 
     expect(inbox).toBeDefined();
@@ -55,17 +31,17 @@ describe("discoverMailboxes (GreenMail integration)", () => {
     expect(cursor.uidValidity).toBeGreaterThan(0);
     expect(cursor.uidNext).toBeGreaterThan(1);
     expect(cursor.messageCount).toBeGreaterThanOrEqual(1);
-    // GreenMail does not support CONDSTORE (RFC 4551)
-    expect(cursor.highestModseq).toBeNull();
+    expect(cursor.highestModseq).toBeTypeOf("number");
+    expect(cursor.highestModseq!).toBeGreaterThan(0);
   });
 
   it("reflects increased uidNext after new message delivery", async () => {
-    const before = await discoverMailboxes(getTestCredentials());
+    const before = await discoverMailboxes(creds());
     const cursorBefore = before.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;
 
-    await seedMessage();
+    await seedMessage(creds(), { subject: "New message for uidNext test" });
 
-    const after = await discoverMailboxes(getTestCredentials());
+    const after = await discoverMailboxes(creds());
     const cursorAfter = after.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;
 
     expect(cursorAfter.uidNext).toBeGreaterThan(cursorBefore.uidNext);
@@ -79,21 +55,21 @@ describe("discoverMailboxes (GreenMail integration)", () => {
   });
 
   it("returns stable cursor when no changes occurred", async () => {
-    const first = await discoverMailboxes(getTestCredentials());
+    const first = await discoverMailboxes(creds());
     const cursorFirst = first.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;
 
-    const second = await discoverMailboxes(getTestCredentials());
+    const second = await discoverMailboxes(creds());
     const cursorSecond = second.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;
 
     expect(cursorSecond).toEqual(cursorFirst);
   });
 
   it("reflects decreased messageCount after deletion", async () => {
-    const before = await discoverMailboxes(getTestCredentials());
+    const before = await discoverMailboxes(creds());
     const cursorBefore = before.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;
 
     // Delete one message via IMAP
-    await withImapConnection(getTestCredentials(), async (client) => {
+    await withImapConnection(creds(), async (client) => {
       const lock = await client.getMailboxLock("INBOX");
       try {
         await client.messageDelete("1", { uid: true });
@@ -102,7 +78,7 @@ describe("discoverMailboxes (GreenMail integration)", () => {
       }
     });
 
-    const after = await discoverMailboxes(getTestCredentials());
+    const after = await discoverMailboxes(creds());
     const cursorAfter = after.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;
 
     expect(cursorAfter.messageCount).toBe(cursorBefore.messageCount - 1);
@@ -111,11 +87,8 @@ describe("discoverMailboxes (GreenMail integration)", () => {
   });
 
   it("throws on invalid credentials", async () => {
-    const creds: ImapCredentials = {
-      ...getTestCredentials(),
-      pass: "wrongpassword",
-    };
+    const badCreds = { ...creds(), pass: "wrongpassword" };
 
-    await expect(discoverMailboxes(creds)).rejects.toThrow();
+    await expect(discoverMailboxes(badCreds)).rejects.toThrow();
   });
 });
