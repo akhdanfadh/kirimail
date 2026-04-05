@@ -1,5 +1,6 @@
 import {
   type AnyPgColumn,
+  bigint,
   index,
   integer,
   pgTable,
@@ -26,9 +27,7 @@ export const emailAccounts = pgTable(
     imapSecurity: text("imap_security").notNull(),
 
     // Credential encryption
-    /** AES-256-GCM envelope as JSON string: {iv, ciphertext, authTag} in base64. */
     encryptedPassword: text("encrypted_password").notNull(),
-    /** Encryption key version: queryable for bulk re-encryption after key rotation. */
     keyVersion: integer("key_version").notNull().default(1),
 
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -51,17 +50,20 @@ export const mailboxes = pgTable(
 
     // IMAP identity
     path: text("path").notNull(),
-    /** Provider hierarchy separator (e.g. "/" or ".") used to derive parent-child structure. */
     delimiter: text("delimiter"),
-
-    // App-level classification
-    /** Normalized app role: inbox, sent, drafts, trash, junk, archive, or custom. */
+    specialUse: text("special_use"),
     role: text("role").notNull(),
     parentId: text("parent_id").references((): AnyPgColumn => mailboxes.id, {
       onDelete: "cascade",
     }),
-    /** Raw RFC 6154 special-use attribute from provider (e.g. "\\Sent") for role-map debugging. */
-    specialUse: text("special_use"),
+
+    // IMAP sync cursor state
+    // - `bigint` as message UIDs are 32-bit per RFC 3501 §2.3.1.1 and unsigned per §9
+    // - `mode: "number"` uses JS number internally as BigInt is not JSON-serializable per ECMA-262 §25.5.2.2
+    uidValidity: bigint("uid_validity", { mode: "number" }),
+    uidNext: bigint("uid_next", { mode: "number" }),
+    messageCount: integer("message_count"),
+    highestModseq: bigint("highest_modseq", { mode: "number" }),
 
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
