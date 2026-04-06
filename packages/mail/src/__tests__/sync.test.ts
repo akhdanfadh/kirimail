@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SyncCursor } from "../types";
 
-import { compareSyncCursors } from "../sync-cursor";
+import { compareSyncCursors } from "../sync";
 
 const baseCursor: SyncCursor = {
   uidValidity: 1,

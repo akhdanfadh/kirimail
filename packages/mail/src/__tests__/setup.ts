@@ -44,9 +44,15 @@ email.0000 = "admin@localhost"
 
 [directory."memory".principals.0001]
 class = "individual"
-name = "testuser"
+name = "discoveryuser"
 secret = "testpass"
-email.0000 = "testuser@localhost"
+email.0000 = "discoveryuser@localhost"
+
+[directory."memory".principals.0002]
+class = "individual"
+name = "syncuser"
+secret = "testpass"
+email.0000 = "syncuser@localhost"
 
 [tracer."stdout"]
 type = "stdout"
@@ -101,11 +107,35 @@ export function testCredentials(user: string, pass = "testpass"): ImapCredential
   };
 }
 
-export interface SeedMessageOptions {
+/** RFC 5322 header values for the seeded message. */
+export interface SeedMessageHeaders {
+  /** From address. Defaults to "sender@localhost". */
   from?: string;
+  /** To address. Defaults to the credential user's address (e.g., "admin@localhost"). */
   to?: string;
+  /** Subject header. */
   subject?: string;
+  /** Date header value. Defaults to current time. */
+  date?: Date;
+  /** Message-ID header. */
+  messageId?: string;
+  /** In-Reply-To header for threading. */
+  inReplyTo?: string;
+  /** References header for threading (space-delimited message IDs). */
+  references?: string;
+}
+
+export interface SeedMessageOptions {
+  /** RFC 5322 headers for the message. */
+  headers?: SeedMessageHeaders;
+  /** Plain text body. Defaults to "Test message body." */
   text?: string;
+  /** Target mailbox for APPEND. Defaults to "INBOX". */
+  mailbox?: string;
+  /** IMAP flags to set on the message (e.g., "\\Seen", "\\Flagged"). */
+  flags?: string[];
+  /** IMAP internal date (server receive timestamp). Passed to APPEND. */
+  internalDate?: Date;
 }
 
 /**
@@ -115,15 +145,19 @@ export interface SeedMessageOptions {
  * the transport library constructs the message for you.
  */
 function buildRawMessage(options: SeedMessageOptions): Buffer {
+  const h = options.headers ?? {};
   const lines = [
-    `From: ${options.from ?? "sender@localhost"}`,
-    `To: ${options.to ?? "user@localhost"}`,
-    `Date: ${new Date().toUTCString()}`,
+    `From: ${h.from ?? "sender@localhost"}`,
+    `To: ${h.to ?? "user@localhost"}`,
+    `Date: ${(h.date ?? new Date()).toUTCString()}`,
     `MIME-Version: 1.0`,
     `Content-Type: text/plain; charset=utf-8`,
   ];
 
-  if (options.subject) lines.push(`Subject: ${options.subject}`);
+  if (h.messageId) lines.push(`Message-ID: ${h.messageId}`);
+  if (h.subject) lines.push(`Subject: ${h.subject}`);
+  if (h.inReplyTo) lines.push(`In-Reply-To: ${h.inReplyTo}`);
+  if (h.references) lines.push(`References: ${h.references}`);
 
   lines.push("", options.text ?? "Test message body.");
   return Buffer.from(lines.join("\r\n"));
@@ -146,8 +180,15 @@ function buildRawMessage(options: SeedMessageOptions): Buffer {
  * state matters.
  */
 export async function seedMessage(creds: ImapCredentials, options?: SeedMessageOptions) {
-  const raw = buildRawMessage({ to: `${creds.user}@localhost`, ...options });
+  const defaultHeaders: SeedMessageHeaders = { to: `${creds.user}@localhost` };
+  const merged: SeedMessageOptions = {
+    ...options,
+    headers: { ...defaultHeaders, ...options?.headers },
+  };
+  const raw = buildRawMessage(merged);
+  const mailbox = options?.mailbox ?? "INBOX";
+  const flags = options?.flags ?? [];
   await withImapConnection(creds, async (client) => {
-    await client.append("INBOX", raw, []);
+    await client.append(mailbox, raw, flags, options?.internalDate);
   });
 }

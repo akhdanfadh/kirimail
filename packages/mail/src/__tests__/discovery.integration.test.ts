@@ -4,11 +4,11 @@ import { withImapConnection } from "../connection";
 import { discoverMailboxes } from "../discovery";
 import { seedMessage, testCredentials } from "./setup";
 
-const creds = () => testCredentials("testuser");
+const creds = () => testCredentials("discoveryuser");
 
 describe("discoverMailboxes (Stalwart integration)", () => {
   beforeAll(async () => {
-    await seedMessage(creds(), { subject: "Test message for discovery" });
+    await seedMessage(creds(), { headers: { subject: "Test message for discovery" } });
   });
 
   it("discovers INBOX with role inbox", async () => {
@@ -39,7 +39,7 @@ describe("discoverMailboxes (Stalwart integration)", () => {
     const before = await discoverMailboxes(creds());
     const cursorBefore = before.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;
 
-    await seedMessage(creds(), { subject: "New message for uidNext test" });
+    await seedMessage(creds(), { headers: { subject: "New message for uidNext test" } });
 
     const after = await discoverMailboxes(creds());
     const cursorAfter = after.mailboxes.find((mb) => mb.role === "inbox")!.syncCursor!;

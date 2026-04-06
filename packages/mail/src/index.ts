@@ -2,12 +2,16 @@ export type {
   CredentialEnvelope,
   DiscoveredMailbox,
   DiscoveryResult,
+  FetchedMessage,
   ImapCredentials,
   MailboxRole,
+  MailboxSyncOptions,
+  MailboxSyncResult,
+  MessageAddress,
+  MessageEnvelope,
   SyncAction,
   SyncCursor,
 } from "./types";
-export { createImapClient, withImapConnection } from "./connection";
 export {
   decryptCredential,
   deserializeEnvelope,
@@ -15,5 +19,4 @@ export {
   serializeEnvelope,
 } from "./crypto";
 export { discoverMailboxes } from "./discovery";
-export { mapMailboxRole } from "./role-map";
-export { compareSyncCursors } from "./sync-cursor";
+export { syncMailbox } from "./sync";
