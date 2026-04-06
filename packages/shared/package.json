@@ -1,5 +1,5 @@
 {
-  "name": "@kirimail/mail",
+  "name": "@kirimail/shared",
   "private": true,
   "type": "module",
   "exports": {
@@ -10,18 +10,9 @@
     "format:fix": "oxfmt .",
     "lint": "oxlint .",
     "lint:fix": "oxlint --fix .",
-    "test": "vitest run",
-    "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@kirimail/shared": "workspace:*",
-    "imapflow": "^1.2.18"
-  },
   "devDependencies": {
-    "@types/node": "^25.5.0",
-    "testcontainers": "^11.13.0",
-    "typescript": "^6.0.2",
-    "vitest": "^4.1.2"
+    "typescript": "^6.0.2"
   }
 }
