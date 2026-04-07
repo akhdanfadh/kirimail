@@ -1,7 +1,7 @@
 import type {
   ImapCredentials,
-  MailboxSyncOptions,
-  MailboxSyncResult,
+  SyncMailboxOptions,
+  SyncMailboxResult,
   SyncAction,
   SyncCursor,
 } from "./types";
@@ -58,15 +58,8 @@ export function compareSyncCursors(
 }
 
 /**
- * Sync a single mailbox: connect, compare cursors, fetch what's needed, disconnect.
- *
- * This is the adapter-shaped sync operation that domain services call. It
- * encapsulates connection lifecycle, cursor comparison, IMAP FETCH, and
- * provider-specific details. Callers never deal with connections, UID ranges,
- * or IMAP quirks directly.
- *
- * Does not persist to DB or enqueue jobs - callers are responsible for
- * storage and downstream effects.
+ * Sync a single mailbox: connect, compare cursors, fetch new messages, and
+ * enumerate server UIDs when deletions are detected. Disconnect when done.
  *
  * @param creds - IMAP credentials for the account.
  * @param path - Mailbox path to sync (e.g., "INBOX").
@@ -77,8 +70,8 @@ export async function syncMailbox(
   creds: ImapCredentials,
   path: string,
   storedCursor: SyncCursor | null,
-  options?: MailboxSyncOptions,
-): Promise<MailboxSyncResult> {
+  options?: SyncMailboxOptions,
+): Promise<SyncMailboxResult> {
   return withImapConnection(creds, async (client) => {
     const mailbox = await client.mailboxOpen(path);
 
@@ -92,26 +85,31 @@ export async function syncMailbox(
     const action = compareSyncCursors(storedCursor, currentCursor);
 
     if (action.type === "noop") {
-      return { action, messages: [], cursor: currentCursor };
+      return { action, messages: [], cursor: currentCursor, remoteUids: null };
     }
 
     if (mailbox.exists === 0) {
-      return { action, messages: [], cursor: currentCursor };
+      return { action, messages: [], cursor: currentCursor, remoteUids: [] };
     }
 
     if (action.type === "full-resync") {
       const messages = await fetchMessages(client, options?.since);
-      return { action, messages, cursor: currentCursor };
+      return { action, messages, cursor: currentCursor, remoteUids: null };
     }
 
-    // Incremental: only fetch new messages if uidNext advanced
-    if (action.newMessages && storedCursor) {
-      const messages = await fetchMessages(client, undefined, storedCursor.uidNext);
-      return { action, messages, cursor: currentCursor };
-    }
+    // Incremental: fetch new messages if uidNext advanced
+    const messages =
+      action.newMessages && storedCursor
+        ? await fetchMessages(client, undefined, storedCursor.uidNext)
+        : [];
 
-    // Flag-only changes - no new messages to fetch.
-    // Callers can use action.flagChanges to decide on flag reconciliation.
-    return { action, messages: [], cursor: currentCursor };
+    // When deletions detected, enumerate current server UIDs for reconciliation
+    const remoteUids = !action.additionsOnly
+      ? // || (not ??) because imapflow search() returns false instead of
+        // null/undefined when no mailbox is selected
+        (await client.search({ all: true }, { uid: true })) || []
+      : null;
+
+    return { action, messages, cursor: currentCursor, remoteUids };
   });
 }

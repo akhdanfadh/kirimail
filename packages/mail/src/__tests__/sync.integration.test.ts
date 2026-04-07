@@ -6,7 +6,7 @@ import { seedMessage, testCredentials } from "./setup";
 
 const creds = () => testCredentials("syncuser");
 
-describe("syncMailbox (Stalwart integration)", () => {
+describe("syncMailbox", () => {
   it("full-resyncs on first sync (no stored cursor)", async () => {
     await seedMessage(creds(), { headers: { subject: "Sync test 1" } });
     await seedMessage(creds(), { headers: { subject: "Sync test 2" } });
@@ -16,6 +16,7 @@ describe("syncMailbox (Stalwart integration)", () => {
 
     expect(result.action).toEqual({ type: "full-resync", reason: "no-prior-cursor" });
     expect(result.messages).toHaveLength(3);
+    expect(result.remoteUids).toBeNull();
 
     // Newest-first ordering (descending UID)
     expect(result.messages[0]!.uid).toBeGreaterThan(result.messages[1]!.uid);
@@ -45,6 +46,7 @@ describe("syncMailbox (Stalwart integration)", () => {
 
     expect(incremental.action.type).toBe("incremental");
     expect(incremental.messages).toHaveLength(2);
+    expect(incremental.remoteUids).toBeNull();
     for (const msg of incremental.messages) {
       expect(msg.uid).toBeGreaterThanOrEqual(initial.cursor.uidNext);
       expect(msg.envelope.subject).toMatch(/^Incremental \d$/);
@@ -58,6 +60,7 @@ describe("syncMailbox (Stalwart integration)", () => {
 
     expect(second.action).toEqual({ type: "noop" });
     expect(second.messages).toHaveLength(0);
+    expect(second.remoteUids).toBeNull();
     expect(second.cursor).toEqual(first.cursor);
   });
 
@@ -110,6 +113,7 @@ describe("syncMailbox (Stalwart integration)", () => {
 
     expect(result.action.type).toBe("full-resync");
     expect(result.messages).toHaveLength(0);
+    expect(result.remoteUids).toEqual([]);
     expect(result.cursor.messageCount).toBe(0);
     expect(result.cursor.uidValidity).toBeGreaterThan(0);
   });
@@ -189,8 +193,85 @@ describe("syncMailbox (Stalwart integration)", () => {
 
     expect(after.action).toEqual({ type: "full-resync", reason: "uid-validity-changed" });
     expect(after.messages).toHaveLength(1);
+    expect(after.remoteUids).toBeNull();
     expect(after.messages[0]!.envelope.subject).toBe("After rebuild");
     expect(after.cursor.uidValidity).not.toBe(before.cursor.uidValidity);
+  });
+
+  it("returns empty remoteUids when all messages deleted from synced mailbox", async () => {
+    await withImapConnection(creds(), (client) => client.mailboxCreate("EmptyAfterSync"));
+    await seedMessage(creds(), { headers: { subject: "Doomed 1" }, mailbox: "EmptyAfterSync" });
+    await seedMessage(creds(), { headers: { subject: "Doomed 2" }, mailbox: "EmptyAfterSync" });
+
+    const before = await syncMailbox(creds(), "EmptyAfterSync", null);
+    expect(before.messages).toHaveLength(2);
+
+    // Delete all messages via IMAP
+    await withImapConnection(creds(), async (client) => {
+      const lock = await client.getMailboxLock("EmptyAfterSync");
+      try {
+        await client.messageDelete("1:*", { uid: true });
+      } finally {
+        lock.release();
+      }
+    });
+
+    const after = await syncMailbox(creds(), "EmptyAfterSync", before.cursor);
+
+    expect(after.action.type).toBe("incremental");
+    if (after.action.type === "incremental") {
+      expect(after.action.additionsOnly).toBe(false);
+    }
+    expect(after.messages).toHaveLength(0);
+    expect(after.cursor.messageCount).toBe(0);
+    // Empty array (not null) signals "delete everything" to DB layer.
+    // Hits the mailbox.exists === 0 early return, skipping SEARCH ALL.
+    expect(after.remoteUids).toEqual([]);
+  });
+
+  it("returns remoteUids when deletions detected alongside new messages", async () => {
+    await withImapConnection(creds(), (client) => client.mailboxCreate("DeletionWithAdd"));
+    await seedMessage(creds(), { headers: { subject: "Msg A" }, mailbox: "DeletionWithAdd" });
+    await seedMessage(creds(), { headers: { subject: "Msg B" }, mailbox: "DeletionWithAdd" });
+    await seedMessage(creds(), { headers: { subject: "Msg C" }, mailbox: "DeletionWithAdd" });
+
+    const before = await syncMailbox(creds(), "DeletionWithAdd", null);
+    expect(before.messages).toHaveLength(3);
+
+    // Delete Msg B via IMAP
+    const deleteUid = before.messages.find((m) => m.envelope.subject === "Msg B")!.uid;
+    await withImapConnection(creds(), async (client) => {
+      const lock = await client.getMailboxLock("DeletionWithAdd");
+      try {
+        await client.messageDelete(String(deleteUid), { uid: true });
+      } finally {
+        lock.release();
+      }
+    });
+
+    // Add a new message
+    await seedMessage(creds(), { headers: { subject: "Msg D" }, mailbox: "DeletionWithAdd" });
+
+    const after = await syncMailbox(creds(), "DeletionWithAdd", before.cursor);
+
+    expect(after.action.type).toBe("incremental");
+    if (after.action.type === "incremental") {
+      expect(after.action.newMessages).toBe(true);
+      expect(after.action.additionsOnly).toBe(false);
+    }
+
+    // New message fetched
+    expect(after.messages).toHaveLength(1);
+    expect(after.messages[0]!.envelope.subject).toBe("Msg D");
+
+    // remoteUids contains surviving + new UIDs, not the deleted one
+    const uidA = before.messages.find((m) => m.envelope.subject === "Msg A")!.uid;
+    const uidC = before.messages.find((m) => m.envelope.subject === "Msg C")!.uid;
+    const uidD = after.messages[0]!.uid;
+    expect(after.remoteUids).not.toBeNull();
+    expect(after.remoteUids).toHaveLength(3);
+    expect(after.remoteUids).toEqual(expect.arrayContaining([uidA, uidC, uidD]));
+    expect(after.remoteUids).not.toContain(deleteUid);
   });
 
   it("signals deletion via additionsOnly: false", async () => {
@@ -220,8 +301,15 @@ describe("syncMailbox (Stalwart integration)", () => {
       expect(after.action.additionsOnly).toBe(false);
       // flagChanges may be true - deletion increments highestModseq on some servers
     }
-    // No new messages to fetch - deletion reconciliation is the caller's job
+    // No new messages to fetch
     expect(after.messages).toHaveLength(0);
     expect(after.cursor.messageCount).toBe(1);
+
+    // remoteUids contains only the surviving message's UID
+    const keepUid = before.messages.find((m) => m.envelope.subject === "Keep")!.uid;
+    expect(after.remoteUids).not.toBeNull();
+    expect(after.remoteUids).toHaveLength(1);
+    expect(after.remoteUids).toContain(keepUid);
+    expect(after.remoteUids).not.toContain(deleteUid);
   });
 });

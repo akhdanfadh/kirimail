@@ -63,21 +63,19 @@ export interface CredentialEnvelope {
 }
 
 /** Options for `syncMailbox`. */
-export interface MailboxSyncOptions {
+export interface SyncMailboxOptions {
   /** Date-based lookback: only fetch messages received since this date. Uses IMAP SEARCH SINCE. */
   since?: Date;
 }
 
-/**
- * Result of syncing a single mailbox. The adapter compares the stored cursor
- * against the current server state, fetches what's needed, and returns the
- * action taken alongside the fetched messages and new cursor.
- */
-export interface MailboxSyncResult {
+/** Result for a mailbox sync operation. */
+export interface SyncMailboxResult {
   /** What sync action was determined by cursor comparison. */
   action: SyncAction;
   /** Fetched message metadata, ordered newest-first (descending UID). */
   messages: FetchedMessage[];
   /** Current mailbox sync cursor to store for the next sync comparison. */
   cursor: SyncCursor;
+  /** Complete set of UIDs currently on the server for this mailbox. */
+  remoteUids: number[] | null;
 }

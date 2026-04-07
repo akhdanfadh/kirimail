@@ -5,12 +5,12 @@ export type {
   FetchedMessage,
   ImapCredentials,
   MailboxRole,
-  MailboxSyncOptions,
-  MailboxSyncResult,
   MessageAddress,
   MessageEnvelope,
   SyncAction,
   SyncCursor,
+  SyncMailboxOptions,
+  SyncMailboxResult,
 } from "./types";
 export {
   decryptCredential,
