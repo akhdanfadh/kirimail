@@ -9,3 +9,8 @@ pre-commit:
     - name: lint
       run: pnpm oxlint --deny-warnings {staged_files}
       glob: "*.{js,jsx,ts,tsx,mjs,cjs,mts,cts}"
+
+pre-push:
+  jobs:
+    - name: test
+      run: turbo run test
