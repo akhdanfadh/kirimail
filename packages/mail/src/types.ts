@@ -85,13 +85,15 @@ export interface CredentialEnvelope {
   keyVersion: number;
 }
 
-/** Options for `syncMailbox`. */
-export interface SyncMailboxOptions {
-  /** Date-based lookback: only fetch messages received since this date. Uses IMAP SEARCH SINCE. */
-  since?: Date;
+/** Per-mailbox input for `syncMailboxes`. */
+export interface SyncMailboxInput {
+  /** Full mailbox path as returned by the server (e.g., "INBOX", "Sent"). */
+  path: string;
+  /** Previously stored cursor for this mailbox, or null for initial sync. */
+  storedCursor: SyncCursor | null;
 }
 
-/** Result for a mailbox sync operation. */
+/** Result for a single mailbox sync operation. */
 export interface SyncMailboxResult {
   /** What sync action was determined by cursor comparison. */
   action: SyncAction;
@@ -101,4 +103,18 @@ export interface SyncMailboxResult {
   cursor: SyncCursor;
   /** Complete set of UIDs currently on the server for this mailbox. */
   remoteUids: number[] | null;
+}
+
+/** Options for `syncMailboxes`, applied to all mailboxes in the batch. */
+export interface SyncMailboxesOptions {
+  /** Date-based lookback: only fetch messages received since this date. Uses IMAP SEARCH SINCE. */
+  since?: Date;
+}
+
+/** Result of syncing multiple mailboxes. */
+export interface SyncMailboxesResult {
+  /** Per-path results for successfully synced mailboxes. */
+  results: Map<string, SyncMailboxResult>;
+  /** Per-path errors for mailboxes that failed (e.g., deleted on server). */
+  errors: Map<string, Error>;
 }

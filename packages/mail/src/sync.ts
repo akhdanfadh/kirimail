@@ -1,6 +1,10 @@
+import type { ImapFlow } from "imapflow";
+
 import type {
   ImapCredentials,
-  SyncMailboxOptions,
+  SyncMailboxInput,
+  SyncMailboxesResult,
+  SyncMailboxesOptions,
   SyncMailboxResult,
   SyncAction,
   SyncCursor,
@@ -57,59 +61,86 @@ export function compareSyncCursors(
   return { type: "incremental", newMessages, flagChanges, additionsOnly };
 }
 
-/**
- * Sync a single mailbox: connect, compare cursors, fetch new messages, and
- * enumerate server UIDs when deletions are detected. Disconnect when done.
- *
- * @param creds - IMAP credentials for the account.
- * @param path - Mailbox path to sync (e.g., "INBOX").
- * @param storedCursor - Previously stored cursor, or null for initial sync.
- * @param options - Optional archive depth lookback via `since`.
- */
-export async function syncMailbox(
-  creds: ImapCredentials,
+/** Sync a single mailbox on an already-open connection (internal helper). */
+async function syncMailboxOnConnection(
+  client: ImapFlow,
   path: string,
   storedCursor: SyncCursor | null,
-  options?: SyncMailboxOptions,
+  options?: SyncMailboxesOptions,
 ): Promise<SyncMailboxResult> {
+  const mailbox = await client.mailboxOpen(path);
+
+  const currentCursor: SyncCursor = {
+    uidValidity: Number(mailbox.uidValidity),
+    uidNext: mailbox.uidNext,
+    messageCount: mailbox.exists,
+    highestModseq: mailbox.highestModseq != null ? Number(mailbox.highestModseq) : null,
+  };
+
+  const action = compareSyncCursors(storedCursor, currentCursor);
+
+  if (action.type === "noop") {
+    return { action, messages: [], cursor: currentCursor, remoteUids: null };
+  }
+
+  if (mailbox.exists === 0) {
+    return { action, messages: [], cursor: currentCursor, remoteUids: [] };
+  }
+
+  if (action.type === "full-resync") {
+    const messages = await fetchMessages(client, options?.since);
+    return { action, messages, cursor: currentCursor, remoteUids: null };
+  }
+
+  // Incremental: fetch new messages if uidNext advanced
+  const messages =
+    action.newMessages && storedCursor
+      ? await fetchMessages(client, undefined, storedCursor.uidNext)
+      : [];
+
+  // When deletions detected, enumerate current server UIDs for reconciliation
+  const remoteUids = !action.additionsOnly
+    ? // || (not ??) because imapflow search() returns false instead of
+      // null/undefined when no mailbox is selected
+      (await client.search({ all: true }, { uid: true })) || []
+    : null;
+
+  return { action, messages, cursor: currentCursor, remoteUids };
+}
+
+/**
+ * Sync mailboxes for an account on a single IMAP connection. Opens one
+ * connection and iterates mailboxes sequentially.
+ *
+ * If a mailbox fails (e.g., deleted on server since discovery), the error
+ * is collected and iteration continues. A failed SELECT does not kill the
+ * IMAP connection. If the connection itself drops, remaining mailboxes are skipped.
+ *
+ * @param creds - IMAP credentials for the account.
+ * @param mailboxes - Mailboxes to sync with their stored cursors.
+ * @param options - Optional archive depth lookback via `since`, applied to all mailboxes.
+ */
+export async function syncMailboxes(
+  creds: ImapCredentials,
+  mailboxes: SyncMailboxInput[],
+  options?: SyncMailboxesOptions,
+): Promise<SyncMailboxesResult> {
   return withImapConnection(creds, async (client) => {
-    const mailbox = await client.mailboxOpen(path);
+    const results = new Map<string, SyncMailboxResult>();
+    const errors = new Map<string, Error>();
 
-    const currentCursor: SyncCursor = {
-      uidValidity: Number(mailbox.uidValidity),
-      uidNext: mailbox.uidNext,
-      messageCount: mailbox.exists,
-      highestModseq: mailbox.highestModseq != null ? Number(mailbox.highestModseq) : null,
-    };
+    for (const { path, storedCursor } of mailboxes) {
+      // Connection dropped (server timeout, network error) - no point
+      // trying remaining mailboxes on a dead connection
+      if (!client.usable) break;
 
-    const action = compareSyncCursors(storedCursor, currentCursor);
-
-    if (action.type === "noop") {
-      return { action, messages: [], cursor: currentCursor, remoteUids: null };
+      try {
+        results.set(path, await syncMailboxOnConnection(client, path, storedCursor, options));
+      } catch (error) {
+        errors.set(path, error instanceof Error ? error : new Error(String(error)));
+      }
     }
 
-    if (mailbox.exists === 0) {
-      return { action, messages: [], cursor: currentCursor, remoteUids: [] };
-    }
-
-    if (action.type === "full-resync") {
-      const messages = await fetchMessages(client, options?.since);
-      return { action, messages, cursor: currentCursor, remoteUids: null };
-    }
-
-    // Incremental: fetch new messages if uidNext advanced
-    const messages =
-      action.newMessages && storedCursor
-        ? await fetchMessages(client, undefined, storedCursor.uidNext)
-        : [];
-
-    // When deletions detected, enumerate current server UIDs for reconciliation
-    const remoteUids = !action.additionsOnly
-      ? // || (not ??) because imapflow search() returns false instead of
-        // null/undefined when no mailbox is selected
-        (await client.search({ all: true }, { uid: true })) || []
-      : null;
-
-    return { action, messages, cursor: currentCursor, remoteUids };
+    return { results, errors };
   });
 }

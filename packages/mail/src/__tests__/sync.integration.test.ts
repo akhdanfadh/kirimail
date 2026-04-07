@@ -1,18 +1,31 @@
 import { describe, expect, it } from "vitest";
 
+import type { SyncMailboxesOptions, SyncMailboxResult, SyncCursor } from "../types";
+
 import { withImapConnection } from "../connection";
-import { syncMailbox } from "../sync";
+import { syncMailboxes } from "../sync";
 import { seedMessage, testCredentials } from "./setup";
 
 const creds = () => testCredentials("syncuser");
 
-describe("syncMailbox", () => {
+/** Sync a single mailbox via syncMailboxes - test convenience. */
+async function syncOne(
+  path: string,
+  storedCursor: SyncCursor | null,
+  options?: SyncMailboxesOptions,
+): Promise<SyncMailboxResult> {
+  const { results, errors } = await syncMailboxes(creds(), [{ path, storedCursor }], options);
+  if (errors.has(path)) throw errors.get(path);
+  return results.get(path)!;
+}
+
+describe("syncMailboxes", () => {
   it("full-resyncs on first sync (no stored cursor)", async () => {
     await seedMessage(creds(), { headers: { subject: "Sync test 1" } });
     await seedMessage(creds(), { headers: { subject: "Sync test 2" } });
     await seedMessage(creds(), { headers: { subject: "Sync test 3" } });
 
-    const result = await syncMailbox(creds(), "INBOX", null);
+    const result = await syncOne("INBOX", null);
 
     expect(result.action).toEqual({ type: "full-resync", reason: "no-prior-cursor" });
     expect(result.messages).toHaveLength(3);
@@ -37,12 +50,12 @@ describe("syncMailbox", () => {
 
   it("returns only new messages on incremental sync", async () => {
     // INBOX has 3 messages from previous test - capture cursor
-    const initial = await syncMailbox(creds(), "INBOX", null);
+    const initial = await syncOne("INBOX", null);
 
     await seedMessage(creds(), { headers: { subject: "Incremental 1" } });
     await seedMessage(creds(), { headers: { subject: "Incremental 2" } });
 
-    const incremental = await syncMailbox(creds(), "INBOX", initial.cursor);
+    const incremental = await syncOne("INBOX", initial.cursor);
 
     expect(incremental.action.type).toBe("incremental");
     expect(incremental.messages).toHaveLength(2);
@@ -55,8 +68,8 @@ describe("syncMailbox", () => {
   });
 
   it("returns noop when nothing changed", async () => {
-    const first = await syncMailbox(creds(), "INBOX", null);
-    const second = await syncMailbox(creds(), "INBOX", first.cursor);
+    const first = await syncOne("INBOX", null);
+    const second = await syncOne("INBOX", first.cursor);
 
     expect(second.action).toEqual({ type: "noop" });
     expect(second.messages).toHaveLength(0);
@@ -95,7 +108,7 @@ describe("syncMailbox", () => {
       internalDate: yesterday,
     });
 
-    const result = await syncMailbox(creds(), "SyncDateTest", null, { since: threeMonthsAgo });
+    const result = await syncOne("SyncDateTest", null, { since: threeMonthsAgo });
 
     expect(result.action.type).toBe("full-resync");
     expect(result.messages).toHaveLength(2);
@@ -109,7 +122,7 @@ describe("syncMailbox", () => {
   it("returns empty messages for empty mailbox", async () => {
     await withImapConnection(creds(), (client) => client.mailboxCreate("EmptyTest"));
 
-    const result = await syncMailbox(creds(), "EmptyTest", null);
+    const result = await syncOne("EmptyTest", null);
 
     expect(result.action.type).toBe("full-resync");
     expect(result.messages).toHaveLength(0);
@@ -127,7 +140,7 @@ describe("syncMailbox", () => {
       flags: ["\\Seen", "\\Flagged"],
     });
 
-    const result = await syncMailbox(creds(), "FlagTest", null);
+    const result = await syncOne("FlagTest", null);
 
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0]!.flags.has("\\Seen")).toBe(true);
@@ -154,7 +167,7 @@ describe("syncMailbox", () => {
       mailbox: "ThreadTest",
     });
 
-    const result = await syncMailbox(creds(), "ThreadTest", null);
+    const result = await syncOne("ThreadTest", null);
 
     expect(result.messages).toHaveLength(2);
 
@@ -176,7 +189,7 @@ describe("syncMailbox", () => {
       mailbox: "UidValidityTest",
     });
 
-    const before = await syncMailbox(creds(), "UidValidityTest", null);
+    const before = await syncOne("UidValidityTest", null);
     expect(before.messages).toHaveLength(1);
 
     // Rebuild: delete and recreate the mailbox
@@ -189,7 +202,7 @@ describe("syncMailbox", () => {
       mailbox: "UidValidityTest",
     });
 
-    const after = await syncMailbox(creds(), "UidValidityTest", before.cursor);
+    const after = await syncOne("UidValidityTest", before.cursor);
 
     expect(after.action).toEqual({ type: "full-resync", reason: "uid-validity-changed" });
     expect(after.messages).toHaveLength(1);
@@ -203,7 +216,7 @@ describe("syncMailbox", () => {
     await seedMessage(creds(), { headers: { subject: "Doomed 1" }, mailbox: "EmptyAfterSync" });
     await seedMessage(creds(), { headers: { subject: "Doomed 2" }, mailbox: "EmptyAfterSync" });
 
-    const before = await syncMailbox(creds(), "EmptyAfterSync", null);
+    const before = await syncOne("EmptyAfterSync", null);
     expect(before.messages).toHaveLength(2);
 
     // Delete all messages via IMAP
@@ -216,7 +229,7 @@ describe("syncMailbox", () => {
       }
     });
 
-    const after = await syncMailbox(creds(), "EmptyAfterSync", before.cursor);
+    const after = await syncOne("EmptyAfterSync", before.cursor);
 
     expect(after.action.type).toBe("incremental");
     if (after.action.type === "incremental") {
@@ -235,7 +248,7 @@ describe("syncMailbox", () => {
     await seedMessage(creds(), { headers: { subject: "Msg B" }, mailbox: "DeletionWithAdd" });
     await seedMessage(creds(), { headers: { subject: "Msg C" }, mailbox: "DeletionWithAdd" });
 
-    const before = await syncMailbox(creds(), "DeletionWithAdd", null);
+    const before = await syncOne("DeletionWithAdd", null);
     expect(before.messages).toHaveLength(3);
 
     // Delete Msg B via IMAP
@@ -252,7 +265,7 @@ describe("syncMailbox", () => {
     // Add a new message
     await seedMessage(creds(), { headers: { subject: "Msg D" }, mailbox: "DeletionWithAdd" });
 
-    const after = await syncMailbox(creds(), "DeletionWithAdd", before.cursor);
+    const after = await syncOne("DeletionWithAdd", before.cursor);
 
     expect(after.action.type).toBe("incremental");
     if (after.action.type === "incremental") {
@@ -279,7 +292,7 @@ describe("syncMailbox", () => {
     await seedMessage(creds(), { headers: { subject: "Keep" }, mailbox: "DeletionTest" });
     await seedMessage(creds(), { headers: { subject: "Delete me" }, mailbox: "DeletionTest" });
 
-    const before = await syncMailbox(creds(), "DeletionTest", null);
+    const before = await syncOne("DeletionTest", null);
     expect(before.messages).toHaveLength(2);
 
     // Delete one message via IMAP
@@ -293,7 +306,7 @@ describe("syncMailbox", () => {
       }
     });
 
-    const after = await syncMailbox(creds(), "DeletionTest", before.cursor);
+    const after = await syncOne("DeletionTest", before.cursor);
 
     expect(after.action.type).toBe("incremental");
     if (after.action.type === "incremental") {
@@ -311,5 +324,54 @@ describe("syncMailbox", () => {
     expect(after.remoteUids).toHaveLength(1);
     expect(after.remoteUids).toContain(keepUid);
     expect(after.remoteUids).not.toContain(deleteUid);
+  });
+
+  it("syncs multiple mailboxes on a shared connection with isolated results", async () => {
+    await withImapConnection(creds(), async (client) => {
+      await client.mailboxCreate("MultiA");
+      await client.mailboxCreate("MultiB");
+    });
+
+    await seedMessage(creds(), { headers: { subject: "A-1" }, mailbox: "MultiA" });
+    await seedMessage(creds(), { headers: { subject: "A-2" }, mailbox: "MultiA" });
+    await seedMessage(creds(), { headers: { subject: "B-1" }, mailbox: "MultiB" });
+
+    const { results, errors } = await syncMailboxes(creds(), [
+      { path: "MultiA", storedCursor: null },
+      { path: "MultiB", storedCursor: null },
+    ]);
+
+    expect(errors.size).toBe(0);
+    expect(results.size).toBe(2);
+
+    const a = results.get("MultiA")!;
+    expect(a.messages).toHaveLength(2);
+    expect(a.messages.map((m) => m.envelope.subject).sort()).toEqual(["A-1", "A-2"]);
+    expect(a.cursor.messageCount).toBe(2);
+
+    const b = results.get("MultiB")!;
+    expect(b.messages).toHaveLength(1);
+    expect(b.messages[0]!.envelope.subject).toBe("B-1");
+    expect(b.cursor.messageCount).toBe(1);
+  });
+
+  it("skips nonexistent mailbox and continues syncing remaining mailboxes", async () => {
+    await withImapConnection(creds(), (client) => client.mailboxCreate("ExistsOk"));
+    await seedMessage(creds(), { headers: { subject: "Survivor" }, mailbox: "ExistsOk" });
+
+    const { results, errors } = await syncMailboxes(creds(), [
+      { path: "DoesNotExist", storedCursor: null },
+      { path: "ExistsOk", storedCursor: null },
+    ]);
+
+    // Nonexistent mailbox produces an error, not a crash
+    expect(errors.size).toBe(1);
+    expect(errors.has("DoesNotExist")).toBe(true);
+
+    // Remaining mailbox synced successfully
+    expect(results.size).toBe(1);
+    const ok = results.get("ExistsOk")!;
+    expect(ok.messages).toHaveLength(1);
+    expect(ok.messages[0]!.envelope.subject).toBe("Survivor");
   });
 });

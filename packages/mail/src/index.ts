@@ -2,14 +2,11 @@ export type {
   CredentialEnvelope,
   DiscoveredMailbox,
   DiscoveryResult,
-  FetchedMessage,
   ImapCredentials,
-  MailboxRole,
-  MessageAddress,
-  MessageEnvelope,
   SyncAction,
-  SyncCursor,
-  SyncMailboxOptions,
+  SyncMailboxesOptions,
+  SyncMailboxesResult,
+  SyncMailboxInput,
   SyncMailboxResult,
 } from "./types";
 export {
@@ -19,4 +16,4 @@ export {
   serializeEnvelope,
 } from "./crypto";
 export { discoverMailboxes } from "./discovery";
-export { syncMailbox } from "./sync";
+export { syncMailboxes } from "./sync";
