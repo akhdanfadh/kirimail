@@ -12,6 +12,10 @@
     "lint:fix": "oxlint --fix .",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@kirimail/db": "workspace:*",
+    "pg-boss": "^12.15.0"
+  },
   "devDependencies": {
     "@types/node": "^25.5.0",
     "typescript": "^6.0.2"
