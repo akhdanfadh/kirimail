@@ -10,8 +10,20 @@ export type {
 
 /** Action needed based on comparing stored vs current sync cursor. */
 export type SyncAction =
-  | { type: "full-resync"; reason: "no-prior-cursor" | "uid-validity-changed" }
-  | { type: "incremental"; newMessages: boolean; flagChanges: boolean; additionsOnly: boolean }
+  | {
+      type: "full-resync";
+      /** Why a full resync is required instead of an incremental update. */
+      reason: "no-prior-cursor" | "uid-validity-changed";
+    }
+  | {
+      type: "incremental";
+      /** True when current uidNext exceeds the stored cursor's uidNext. */
+      newMessages: boolean;
+      /** True when HIGHESTMODSEQ advanced (CONDSTORE). False if either modseq is null. */
+      flagChanges: boolean;
+      /** Balanced-math heuristic: true when uidNext delta equals messageCount delta (no deletions mixed in). */
+      additionsOnly: boolean;
+    }
   | { type: "noop" };
 
 /**
@@ -32,11 +44,13 @@ export interface DiscoveredMailbox {
   syncCursor: SyncCursor | null;
   /** Normalized app role derived from special-use attributes or name patterns. */
   role: MailboxRole;
+  /** Sub-mailboxes under this node, built from delimiter-split paths during discovery. */
   children: DiscoveredMailbox[];
 }
 
 /** Result of mailbox discovery for an IMAP account. */
 export interface DiscoveryResult {
+  /** Root-level mailboxes; descendants are nested via {@link DiscoveredMailbox.children}. */
   mailboxes: DiscoveredMailbox[];
 }
 
@@ -47,18 +61,27 @@ export interface DiscoveryResult {
  * @see https://www.rfc-editor.org/rfc/rfc8314 - Use of TLS for email (port/security guidance)
  */
 export interface ImapCredentials {
+  /** IMAP server hostname (e.g. "imap.gmail.com"). */
   host: string;
+  /** IMAP server port (e.g. 993 for TLS, 143 for STARTTLS). */
   port: number;
+  /** Whether to use implicit TLS on connect (true for port 993). */
   secure: boolean;
+  /** Login username, typically the full email address. */
   user: string;
+  /** Login password or app-specific password. */
   pass: string;
 }
 
 /** AES-256-GCM encrypted credential envelope for DB storage. */
 export interface CredentialEnvelope {
+  /** Base64-encoded initialization vector. */
   iv: string;
+  /** Base64-encoded encrypted payload. */
   ciphertext: string;
+  /** Base64-encoded GCM authentication tag for tamper detection. */
   authTag: string;
+  /** Encryption key version for rotation and re-encryption support. */
   keyVersion: number;
 }
 

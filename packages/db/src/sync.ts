@@ -12,7 +12,9 @@ type Db = NodePgDatabase<typeof schema>;
 
 /** Counts returned by {@link applySync}. */
 export interface ApplySyncResult {
+  /** Rows inserted (excludes conflict-skipped duplicates). */
   messagesCreated: number;
+  /** Rows removed by uidValidity purge and/or remoteUids reconciliation. */
   messagesDeleted: number;
 }
 
