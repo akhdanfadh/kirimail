@@ -1,6 +1,5 @@
+import { handleApiRequest } from "@kirimail/api";
 import { createFileRoute } from "@tanstack/react-router";
-
-import { handleApiRequest } from "../../server";
 
 async function proxyRequestToApi(request: Request) {
   return handleApiRequest(request);

@@ -1,0 +1,27 @@
+{
+  "name": "@kirimail/auth",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "format": "oxfmt --check .",
+    "format:fix": "oxfmt .",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@better-auth/drizzle-adapter": "^1.5.6",
+    "@kirimail/db": "workspace:*",
+    "@kirimail/env": "workspace:*",
+    "@t3-oss/env-core": "^0.13.11",
+    "better-auth": "^1.5.6",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "typescript": "^6.0.2"
+  }
+}

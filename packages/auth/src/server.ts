@@ -4,10 +4,12 @@ import { betterAuth } from "better-auth";
 
 import { serverEnv } from "./env";
 
+export const AUTH_BASE_PATH = "/api/v1/auth";
+
 export const auth = betterAuth({
   appName: "Kirimail",
   baseURL: serverEnv.BETTER_AUTH_URL,
-  basePath: "/api/v1/auth",
+  basePath: AUTH_BASE_PATH,
   secret: serverEnv.BETTER_AUTH_SECRET,
   trustedOrigins: [serverEnv.BETTER_AUTH_URL],
   session: {
