@@ -83,6 +83,28 @@ export interface MessageEnvelope {
   messageId: string | null;
 }
 
+/**
+ * A mailbox discovered via IMAP LIST with normalized role and hierarchy.
+ *
+ * @see https://www.rfc-editor.org/rfc/rfc3501#section-7.2.2 - LIST response format
+ * @see https://www.rfc-editor.org/rfc/rfc6154 - Special-use mailbox attributes
+ * @see https://www.rfc-editor.org/rfc/rfc5819 - LIST-STATUS (cursor capture in one round-trip)
+ */
+export interface DiscoveredMailbox {
+  /** Full mailbox path as returned by the server. */
+  path: string;
+  /** Provider hierarchy separator. null if flat namespace. */
+  delimiter: string | null;
+  /** Raw special-use attribute. null if none advertised. */
+  specialUse: string | null;
+  /** Normalized app role derived from special-use attributes or name patterns. */
+  role: MailboxRole;
+  /** Sync cursor captured via LIST-STATUS. null if status was unavailable. */
+  syncCursor: SyncCursor | null;
+  /** Sub-mailboxes under this node, built from delimiter-split paths during discovery. */
+  children: DiscoveredMailbox[];
+}
+
 /** Message metadata fetched from IMAP FETCH (envelope + flags + size). */
 export interface FetchedMessage {
   /**

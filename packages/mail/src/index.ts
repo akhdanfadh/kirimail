@@ -1,6 +1,5 @@
 export type {
   CredentialEnvelope,
-  DiscoveredMailbox,
   DiscoveryResult,
   ImapCredentials,
   SyncAction,

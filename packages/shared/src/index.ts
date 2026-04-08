@@ -1,4 +1,5 @@
 export type {
+  DiscoveredMailbox,
   FetchedMessage,
   MailboxRole,
   MessageAddress,
