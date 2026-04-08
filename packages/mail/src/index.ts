@@ -1,13 +1,12 @@
+export type { CredentialEnvelope } from "./crypto";
+export type { DiscoveryResult } from "./discovery";
 export type {
-  CredentialEnvelope,
-  DiscoveryResult,
-  ImapCredentials,
-  SyncAction,
   SyncMailboxesOptions,
-  SyncMailboxesResult,
   SyncMailboxInput,
   SyncMailboxResult,
-} from "./types";
+  SyncMailboxesResult,
+} from "./sync";
+
 export {
   decryptCredential,
   deserializeEnvelope,

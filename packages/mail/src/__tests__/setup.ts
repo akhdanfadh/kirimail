@@ -4,7 +4,7 @@ import type { TestProject } from "vitest/node";
 import { GenericContainer, Wait } from "testcontainers";
 import { inject } from "vitest";
 
-import type { ImapCredentials } from "../types";
+import type { ImapCredentials } from "../connection";
 
 import { withImapConnection } from "../connection";
 

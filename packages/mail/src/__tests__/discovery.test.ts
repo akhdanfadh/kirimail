@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapMailboxRole } from "../role-map";
+import { mapMailboxRole } from "../discovery";
 
 describe("mapMailboxRole", () => {
   describe("tier 1: special-use attributes", () => {

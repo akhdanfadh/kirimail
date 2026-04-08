@@ -1,6 +1,8 @@
+import type { SyncCursor } from "@kirimail/shared";
+
 import { describe, expect, it } from "vitest";
 
-import type { SyncMailboxesOptions, SyncMailboxResult, SyncCursor } from "../types";
+import type { SyncMailboxesOptions, SyncMailboxResult } from "../sync";
 
 import { withImapConnection } from "../connection";
 import { syncMailboxes } from "../sync";

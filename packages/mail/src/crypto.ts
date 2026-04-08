@@ -10,11 +10,21 @@
  */
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
-import type { CredentialEnvelope } from "./types";
-
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
+
+/** AES-256-GCM encrypted credential envelope for DB storage. */
+export interface CredentialEnvelope {
+  /** Base64-encoded initialization vector. */
+  iv: string;
+  /** Base64-encoded encrypted payload. */
+  ciphertext: string;
+  /** Base64-encoded GCM authentication tag for tamper detection. */
+  authTag: string;
+  /** Encryption key version for rotation and re-encryption support. */
+  keyVersion: number;
+}
 
 /** Encrypt a plaintext credential with AES-256-GCM. */
 export function encryptCredential(

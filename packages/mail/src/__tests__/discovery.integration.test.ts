@@ -6,7 +6,7 @@ import { seedMessage, testCredentials } from "./setup";
 
 const creds = () => testCredentials("discoveryuser");
 
-describe("discoverMailboxes (Stalwart integration)", () => {
+describe("discoverMailboxes", () => {
   beforeAll(async () => {
     await seedMessage(creds(), { headers: { subject: "Test message for discovery" } });
   });

@@ -1,8 +1,2 @@
-export type {
-  DiscoveredMailbox,
-  FetchedMessage,
-  MailboxRole,
-  MessageAddress,
-  MessageEnvelope,
-  SyncCursor,
-} from "./mail";
+export type * from "./message";
+export type * from "./mailbox";
