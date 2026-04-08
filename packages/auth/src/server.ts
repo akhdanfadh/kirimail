@@ -2,9 +2,10 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { db } from "@kirimail/db";
 import { betterAuth } from "better-auth";
 
+import { AUTH_BASE_PATH } from "./client";
 import { serverEnv } from "./env";
 
-export const AUTH_BASE_PATH = "/api/v1/auth";
+export { AUTH_BASE_PATH };
 
 export const auth = betterAuth({
   appName: "Kirimail",
