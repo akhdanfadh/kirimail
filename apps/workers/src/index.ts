@@ -1,6 +1,9 @@
 import { pool } from "@kirimail/db";
 import { PgBoss } from "pg-boss";
 
+import { workerEnv } from "./env";
+import { registerSync } from "./sync";
+
 /** Handle returned by {@link startWorkers} for lifecycle management. */
 export interface WorkerHandle {
   /** Gracefully stop all workers and pg-boss. Idempotent. */
@@ -39,27 +42,11 @@ export async function startWorkers(): Promise<WorkerHandle> {
 
   // Queue registrations - stop boss if registration fails partway through
   try {
-    await registerSyncAccount(boss);
+    await registerSync(boss, workerEnv.SYNC_CRON_SCHEDULE);
   } catch (err) {
     await boss.stop({ graceful: true, timeout: 5_000 }).catch(console.error);
     throw err;
   }
 
   return { stop };
-}
-
-/** Create the sync-account queue (stately) and register its handler. */
-async function registerSyncAccount(boss: PgBoss) {
-  await boss.createQueue("sync-account", {
-    policy: "stately",
-    retryLimit: 3,
-    retryDelay: 30,
-    retryBackoff: true,
-    expireInSeconds: 600,
-  });
-
-  await boss.work("sync-account", async (jobs) => {
-    const job = jobs[0]!;
-    console.log(`[sync-account] placeholder job ${job.id}`, job.data);
-  });
 }

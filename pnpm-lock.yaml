@@ -114,9 +114,21 @@ importers:
       '@kirimail/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@kirimail/env':
+        specifier: workspace:*
+        version: link:../../packages/env
+      '@kirimail/mail':
+        specifier: workspace:*
+        version: link:../../packages/mail
+      '@t3-oss/env-core':
+        specifier: ^0.13.11
+        version: 0.13.11(typescript@6.0.2)(valibot@1.3.1(typescript@6.0.2))(zod@4.3.6)
       pg-boss:
         specifier: ^12.15.0
         version: 12.15.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: ^25.5.0
@@ -238,12 +250,21 @@ importers:
 
   packages/mail:
     dependencies:
+      '@kirimail/env':
+        specifier: workspace:*
+        version: link:../env
       '@kirimail/shared':
         specifier: workspace:*
         version: link:../shared
+      '@t3-oss/env-core':
+        specifier: ^0.13.11
+        version: 0.13.11(typescript@6.0.2)(valibot@1.3.1(typescript@6.0.2))(zod@4.3.6)
       imapflow:
         specifier: ^1.2.18
         version: 1.2.18
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@types/node':
         specifier: ^25.5.0

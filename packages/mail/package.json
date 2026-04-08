@@ -15,8 +15,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@kirimail/env": "workspace:*",
     "@kirimail/shared": "workspace:*",
-    "imapflow": "^1.2.18"
+    "@t3-oss/env-core": "^0.13.11",
+    "imapflow": "^1.2.18",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

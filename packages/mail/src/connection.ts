@@ -13,7 +13,15 @@ export interface ImapCredentials {
   host: string;
   /** IMAP server port (e.g., 993 for TLS, 143 for STARTTLS). */
   port: number;
-  /** True for direct TLS (port 993); false for STARTTLS upgrade (port 143). */
+  /**
+   * True for direct TLS (port 993); false for STARTTLS upgrade (port 143).
+   *
+   * When false, imapflow connects in plaintext and upgrades via STARTTLS if
+   * the server advertises it, but does not require it - a server that omits
+   * STARTTLS (misconfigured or MITM downgrade) will proceed unencrypted.
+   * Enforce STARTTLS via imapflow's `requireTLS` option when strict security
+   * is needed.
+   */
   secure: boolean;
   /** Login username, usually the full email address. */
   user: string;

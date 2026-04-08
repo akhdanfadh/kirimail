@@ -1,3 +1,4 @@
+export type { ImapCredentials } from "./connection";
 export type { CredentialEnvelope } from "./crypto";
 export type { DiscoveryResult } from "./discovery";
 export type {
@@ -14,4 +15,5 @@ export {
   serializeEnvelope,
 } from "./crypto";
 export { discoverMailboxes } from "./discovery";
+export { mailEnv } from "./env";
 export { syncMailboxes } from "./sync";

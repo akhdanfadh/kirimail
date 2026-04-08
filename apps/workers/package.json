@@ -14,7 +14,11 @@
   },
   "dependencies": {
     "@kirimail/db": "workspace:*",
-    "pg-boss": "^12.15.0"
+    "@kirimail/env": "workspace:*",
+    "@kirimail/mail": "workspace:*",
+    "@t3-oss/env-core": "^0.13.11",
+    "pg-boss": "^12.15.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",

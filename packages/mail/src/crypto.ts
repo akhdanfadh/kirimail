@@ -46,7 +46,13 @@ export function encryptCredential(
   };
 }
 
-/** Decrypt an AES-256-GCM encrypted envelope back to plaintext. */
+/**
+ * Decrypt an AES-256-GCM encrypted envelope back to plaintext.
+ *
+ * @throws {Error} Deterministic failure if the key is wrong or the envelope
+ *   is corrupted (GCM auth tag mismatch). These errors will never succeed
+ *   on retry with the same inputs.
+ */
 export function decryptCredential(envelope: CredentialEnvelope, key: Buffer): string {
   const iv = Buffer.from(envelope.iv, "base64");
   const ciphertext = Buffer.from(envelope.ciphertext, "base64");
@@ -63,7 +69,12 @@ export function serializeEnvelope(envelope: CredentialEnvelope): string {
   return JSON.stringify(envelope);
 }
 
-/** Deserialize a JSON string from DB back to an encrypted envelope. */
+/**
+ * Deserialize a JSON string from DB back to an encrypted envelope.
+ *
+ * @throws {SyntaxError} Deterministic failure if the input is not valid JSON.
+ *   Will never succeed on retry with the same input.
+ */
 export function deserializeEnvelope(serialized: string): CredentialEnvelope {
   return JSON.parse(serialized) as CredentialEnvelope;
 }
