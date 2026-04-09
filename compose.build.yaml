@@ -1,0 +1,64 @@
+# Build and run the production image locally.
+# Web and workers use the same Docker image with different CMD.
+# When CI publishes images, compose.yaml will use image: instead of build.
+#
+# Usage:
+#   docker compose -f compose.build.yaml up --build
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kirimailadmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kirimailpassword}
+      POSTGRES_DB: ${POSTGRES_DB:-kirimail}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kirimailadmin} -d ${POSTGRES_DB:-kirimail}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment: # override .env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}
+      START_WORKERS_IN_PROCESS: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: "curl -f http://localhost:3000/api/v1/health"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  workers:
+    build: .
+    working_dir: /app/apps/workers
+    command: ["node", "--import", "tsx", "src/standalone.ts"]
+    env_file: .env
+    environment: # override .env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: "curl -f http://localhost:3005/"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  postgres_data:

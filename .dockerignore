@@ -1,8 +1,7 @@
+.git/
 .output/
 .tanstack/
 .turbo/
 dist/
 node_modules/
 .env*
-!.env.example
-lefthook-local.yml
