@@ -1,11 +1,10 @@
 # Kirimail Docker image — single image, CMD selects role.
 #
 # Web (default):  node apps/web/.output/server/index.mjs
-# Workers:        node --import tsx src/standalone.ts (working_dir: apps/workers)
+# Workers:        node apps/workers/dist/standalone.mjs
 #
-# When adding a new workspace package, update the COPY lines in the
-# base stage (package.json). If workers depend on it, also add its
-# src/ to the runner stage.
+# When adding a new workspace package, update the COPY lines
+# in the base stage (package.json).
 
 # ============================================================
 # Stage 1: base — Node.js with pnpm + workspace manifests
@@ -28,7 +27,7 @@ COPY packages/mail/package.json ./packages/mail/
 COPY packages/shared/package.json ./packages/shared/
 
 # ============================================================
-# Stage 2: build — install all deps + compile the web app
+# Stage 2: build — install all deps + compile web + workers
 # ============================================================
 FROM base AS build
 
@@ -38,7 +37,7 @@ FROM base AS build
 RUN pnpm install --frozen-lockfile --ignore-scripts --shamefully-hoist
 
 COPY . .
-RUN pnpm turbo run build --filter=@kirimail/web
+RUN pnpm turbo run build --filter=@kirimail/web --filter=@kirimail/workers
 
 # ============================================================
 # Stage 3: runner — production image
@@ -52,14 +51,8 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --prod
 # Built web app (Nitro server + client assets)
 COPY --from=build /app/apps/web/.output ./apps/web/.output
 
-# Worker + dependency sources (tsx transpiles at runtime).
-# Workers import: db, env, mail, shared.
-COPY apps/workers/src ./apps/workers/src
-COPY apps/workers/tsconfig.json ./apps/workers/
-COPY packages/db/src ./packages/db/src
-COPY packages/env/src ./packages/env/src
-COPY packages/mail/src ./packages/mail/src
-COPY packages/shared/src ./packages/shared/src
+# Built workers (tsdown bundle — workspace packages inlined)
+COPY --from=build /app/apps/workers/dist ./apps/workers/dist
 
 RUN addgroup --system --gid 2000 kirimail \
   && adduser --system --uid 2000 --ingroup kirimail kirimail

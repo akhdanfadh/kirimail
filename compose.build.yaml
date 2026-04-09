@@ -45,7 +45,7 @@ services:
   workers:
     build: .
     working_dir: /app/apps/workers
-    command: ["node", "--import", "tsx", "src/standalone.ts"]
+    command: ["node", "apps/workers/dist/standalone.mjs"]
     env_file: .env
     environment: # override .env
       DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}

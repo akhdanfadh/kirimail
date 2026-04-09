@@ -6,6 +6,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "build": "tsdown",
     "format": "oxfmt --check .",
     "format:fix": "oxfmt .",
     "lint": "oxlint .",
@@ -20,7 +21,6 @@
     "@kirimail/mail": "workspace:*",
     "@t3-oss/env-core": "^0.13.11",
     "pg-boss": "^12.15.0",
-    "tsx": "^4.21.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -30,6 +30,7 @@
     "drizzle-orm": "^0.45.1",
     "pg": "^8.20.0",
     "testcontainers": "^11.13.0",
+    "tsdown": "^0.21.7",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
   }

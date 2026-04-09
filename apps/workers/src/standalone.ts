@@ -2,7 +2,7 @@
  * Standalone entry point for running workers in a separate container.
  *
  * Same Docker image, different CMD:
- *   CMD ["node", "--import", "tsx", "src/standalone.ts"]
+ *   CMD ["node", "apps/workers/dist/standalone.mjs"]
  *
  * A minimal HTTP health endpoint reports DB connectivity for Docker
  * healthchecks (port configurable via WORKER_HEALTH_PORT, default 3005).
