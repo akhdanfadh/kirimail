@@ -7,6 +7,9 @@
     "./schema": "./src/schema/index.ts"
   },
   "scripts": {
+    "build": "tsdown",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx src/migrate.ts",
     "db:push": "drizzle-kit push",
     "format": "oxfmt --check .",
     "format:fix": "oxfmt .",
@@ -31,6 +34,7 @@
     "dotenv": "^17.3.1",
     "drizzle-kit": "^0.31.10",
     "testcontainers": "^11.13.0",
+    "tsdown": "^0.21.7",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
   }

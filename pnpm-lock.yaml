@@ -271,6 +271,9 @@ importers:
       testcontainers:
         specifier: ^11.13.0
         version: 11.13.0
+      tsdown:
+        specifier: ^0.21.7
+        version: 0.21.7(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(typescript@6.0.2)
       typescript:
         specifier: ^6.0.2
         version: 6.0.2

@@ -31,6 +31,13 @@ RUN pnpm install --frozen-lockfile --ignore-scripts --shamefully-hoist
 COPY . .
 RUN pnpm turbo run build --filter=@kirimail/web --filter=@kirimail/workers
 
+# Generate migration SQL from current schema. Remove any leftover local
+# drizzle/ that COPY may have included so generate always starts clean.
+#
+# NOTE: Pre-v1 only. Remove this line when schema stabilizes.
+# Post-v1, developers run db:generate locally and commit the SQL files.
+RUN rm -rf packages/db/drizzle && pnpm --filter @kirimail/db run db:generate --name=initial
+
 # ============================================================
 # Stage 2: runner — production image
 # ============================================================
@@ -48,6 +55,10 @@ COPY --from=build /app/apps/web/.output ./apps/web/.output
 
 # Built workers (tsdown bundle — workspace packages inlined)
 COPY --from=build /app/apps/workers/dist ./apps/workers/dist
+
+# Migration runner + generated SQL files
+COPY --from=build /app/packages/db/dist/migrate.mjs ./packages/db/dist/
+COPY --from=build /app/packages/db/drizzle ./packages/db/drizzle
 
 RUN addgroup --system --gid 2000 kirimail \
   && adduser --system --uid 2000 --ingroup kirimail kirimail

@@ -6,3 +6,7 @@ node_modules/
 .env*
 !.env.example
 lefthook-local.yml
+
+# NOTE: Pre-v1 migration SQL generated at Docker build time, not committed.
+# When schema stabilizes, remove this line and commit the migration files.
+packages/db/drizzle/

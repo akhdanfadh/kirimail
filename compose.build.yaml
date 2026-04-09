@@ -1,5 +1,5 @@
 # Build and run the production image locally.
-# Web and workers use the same Docker image with different CMD.
+# All app services share one Docker image; CMD selects the role.
 # When CI publishes images, compose.yaml will use image: instead of build.
 #
 # Usage:
@@ -23,11 +23,24 @@ services:
       retries: 5
       start_period: 10s
 
-  web:
+  # One-shot migration service: applies Drizzle SQL migrations then exits.
+  # Separated from web/workers so migrations run exactly once (no race between
+  # parallel containers) and a failed migration blocks all dependents cleanly.
+  migrate:
     build:
       context: .
       tags:
         - "kirimail:latest"
+    command: ["node", "packages/db/dist/migrate.mjs"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    image: kirimail:latest
     ports:
       - "3000:3000"
     env_file: .env
@@ -35,8 +48,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}
       START_WORKERS_IN_PROCESS: "false"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: "curl -f http://localhost:3000/api/v1/health"
@@ -52,8 +65,8 @@ services:
     environment: # override .env
       DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: "curl -f http://localhost:3005/"
