@@ -4,15 +4,12 @@
 # Workers:        node apps/workers/dist/standalone.mjs
 #
 # When adding a new workspace package, update the COPY lines
-# in the base stage (package.json).
+# in the build stage (package.json).
 
 # ============================================================
-# Stage 1: base — Node.js with pnpm + workspace manifests
+# Stage 1: build — install all deps + compile web + workers
 # ============================================================
-FROM node:24-slim AS base
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends curl \
-  && rm -rf /var/lib/apt/lists/*
+FROM node:24-slim AS build
 RUN npm install -g corepack@0.34.6 && corepack enable
 WORKDIR /app
 
@@ -26,11 +23,6 @@ COPY packages/env/package.json ./packages/env/
 COPY packages/mail/package.json ./packages/mail/
 COPY packages/shared/package.json ./packages/shared/
 
-# ============================================================
-# Stage 2: build — install all deps + compile web + workers
-# ============================================================
-FROM base AS build
-
 # --shamefully-hoist: flatten node_modules/ so the bundler finds all deps.
 #   Known compatibility gap between pnpm symlinks and Nitro-based bundling
 #   in Docker: https://github.com/nuxt/nuxt/issues/14146
@@ -40,13 +32,16 @@ COPY . .
 RUN pnpm turbo run build --filter=@kirimail/web --filter=@kirimail/workers
 
 # ============================================================
-# Stage 3: runner — production image
+# Stage 2: runner — production image
 # ============================================================
-FROM base AS runner
+FROM node:24-slim AS runner
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends curl \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
 ENV NODE_ENV=production
-
-RUN pnpm install --frozen-lockfile --ignore-scripts --prod
 
 # Built web app (Nitro server + client assets)
 COPY --from=build /app/apps/web/.output ./apps/web/.output

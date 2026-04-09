@@ -24,7 +24,10 @@ services:
       start_period: 10s
 
   web:
-    build: .
+    build:
+      context: .
+      tags:
+        - "kirimail:latest"
     ports:
       - "3000:3000"
     env_file: .env
@@ -43,8 +46,7 @@ services:
       start_period: 15s
 
   workers:
-    build: .
-    working_dir: /app/apps/workers
+    image: kirimail:latest
     command: ["node", "apps/workers/dist/standalone.mjs"]
     env_file: .env
     environment: # override .env
