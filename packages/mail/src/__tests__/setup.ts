@@ -60,6 +60,12 @@ name = "commandsuser"
 secret = "testpass"
 email.0000 = "commandsuser@localhost"
 
+[directory."memory".principals.0004]
+class = "individual"
+name = "reconnectuser"
+secret = "testpass"
+email.0000 = "reconnectuser@localhost"
+
 [tracer."stdout"]
 type = "stdout"
 level = "info"

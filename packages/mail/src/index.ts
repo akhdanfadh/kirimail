@@ -8,6 +8,12 @@ export type { ImapCredentials } from "./connection";
 export type { CredentialEnvelope } from "./crypto";
 export type { DiscoveryResult } from "./discovery";
 export type {
+  BackoffConfig,
+  ClassifiedError,
+  ImapErrorCategory,
+  ReconnectionManagerOptions,
+} from "./reconnection";
+export type {
   SyncMailboxesOptions,
   SyncMailboxInput,
   SyncMailboxResult,
@@ -23,4 +29,5 @@ export {
 } from "./crypto";
 export { discoverMailboxes } from "./discovery";
 export { mailEnv } from "./env";
+export { ReconnectionManager } from "./reconnection";
 export { syncMailboxes } from "./sync";
