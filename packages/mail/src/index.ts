@@ -4,7 +4,7 @@ export type {
   MoveMessagesInput,
   StoreFlagsInput,
 } from "./commands";
-export type { ImapCredentials } from "./connection";
+export type { ImapConnectionCacheOptions, ImapCredentials } from "./connection";
 export type { CredentialEnvelope } from "./crypto";
 export type { DiscoveryResult } from "./discovery";
 export type {
@@ -29,6 +29,7 @@ export type {
 } from "./sync";
 
 export { expungeMessages, moveMessages, storeFlags } from "./commands";
+export { ImapConnectionCache } from "./connection";
 export {
   decryptCredential,
   deserializeEnvelope,
