@@ -1,4 +1,4 @@
-import type { ImapCredentials, SyncMailboxInput } from "@kirimail/mail";
+import type { SyncMailboxInput } from "@kirimail/mail";
 import type { Job, PgBoss } from "pg-boss";
 
 import {
@@ -8,13 +8,9 @@ import {
   getEmailAccountById,
   reconcileMailboxes,
 } from "@kirimail/db";
-import {
-  decryptCredential,
-  deserializeEnvelope,
-  discoverMailboxes,
-  mailEnv,
-  syncMailboxes,
-} from "@kirimail/mail";
+import { discoverMailboxes, syncMailboxes } from "@kirimail/mail";
+
+import { resolveImapCredentials } from "./credentials";
 
 /** Register sync queues, handlers, and cron schedule. */
 export async function registerSync(boss: PgBoss, cronSchedule: string): Promise<void> {
@@ -101,20 +97,7 @@ export async function syncEmailAccount(accountId: string): Promise<void> {
   }
 
   // 2. Decrypt IMAP credentials
-  const key = Buffer.from(mailEnv.CREDENTIAL_ENCRYPTION_KEY, "hex");
-  // NOTE: deserializeEnvelope and decryptCredential throw deterministically on
-  // bad data (see their @throws docs). These will burn all retries. Classify
-  // permanent vs transient errors when account error states are UI-visible
-  // (e.g., "invalid credentials" badge on the account settings page).
-  const envelope = deserializeEnvelope(account.encryptedPassword);
-  const password = decryptCredential(envelope, key);
-  const creds: ImapCredentials = {
-    host: account.imapHost,
-    pass: password,
-    port: account.imapPort,
-    secure: account.imapSecurity === "tls",
-    user: account.emailAddress,
-  };
+  const creds = resolveImapCredentials(account);
 
   // 3. Discover mailboxes and reconcile with DB
   const { mailboxes } = await discoverMailboxes(creds);

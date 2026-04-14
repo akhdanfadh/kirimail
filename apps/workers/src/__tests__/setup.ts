@@ -50,6 +50,12 @@ name = "syncuser"
 secret = "testpass"
 email.0000 = "syncuser@localhost"
 
+[directory."memory".principals.0002]
+class = "individual"
+name = "imapcommanduser"
+secret = "testpass"
+email.0000 = "imapcommanduser@localhost"
+
 [tracer."stdout"]
 type = "stdout"
 level = "info"
