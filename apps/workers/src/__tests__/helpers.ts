@@ -15,9 +15,12 @@ type Db = NodePgDatabase<typeof schema>;
 // DB connection
 // ---------------------------------------------------------------------------
 
-/** Create a Drizzle client connected to the test Postgres container. */
+/** Create a Drizzle client connected to the per-worker test database. */
 export function createTestDb(): { db: Db; pool: Pool } {
-  const pool = new Pool({ connectionString: inject("databaseUrl") });
+  // Uses process.env (not inject) because the per-worker database URL is
+  // constructed in setup-env.ts, not in globalSetup — inject only carries
+  // values from globalSetup's project.provide().
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
   const db = drizzle(pool, { schema });
   return { db, pool };
 }

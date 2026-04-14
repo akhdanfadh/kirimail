@@ -63,7 +63,7 @@ enable = true
 
 declare module "vitest" {
   export interface ProvidedContext {
-    databaseUrl: string;
+    postgresUrl: string;
     stalwartHost: string;
     stalwartImapPort: number;
     encryptionKey: string;
@@ -102,21 +102,23 @@ export async function setup(project: TestProject) {
   pgContainer = pg;
   stalwartContainer = stalwart;
 
-  // Push Drizzle schema into test database
+  // Push Drizzle schema into kirimail_test - used as a template for per-worker
+  // databases (CREATE DATABASE ... TEMPLATE) so test files can run in parallel.
   const host = pg.getHost();
   const port = pg.getMappedPort(5432);
-  const databaseUrl = `postgresql://test:test@${host}:${port}/kirimail_test`;
+  const postgresUrl = `postgresql://test:test@${host}:${port}/postgres`;
+  const templateUrl = `postgresql://test:test@${host}:${port}/kirimail_test`;
 
-  const pool = new Pool({ connectionString: databaseUrl });
-  const db = drizzle(pool);
+  const templatePool = new Pool({ connectionString: templateUrl });
+  const db = drizzle(templatePool);
   const { apply } = await pushSchema(schema, db);
   await apply();
-  await pool.end();
+  await templatePool.end();
 
   // Generate deterministic test encryption key (64 hex = 32 bytes for AES-256)
   const encryptionKey = randomBytes(32).toString("hex");
 
-  project.provide("databaseUrl", databaseUrl);
+  project.provide("postgresUrl", postgresUrl);
   project.provide("stalwartHost", stalwart.getHost());
   project.provide("stalwartImapPort", stalwart.getMappedPort(143));
   project.provide("encryptionKey", encryptionKey);
