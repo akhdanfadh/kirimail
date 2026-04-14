@@ -1,21 +1,13 @@
 import type { SyncMailboxInput } from "@kirimail/mail";
 import type { Job, PgBoss } from "pg-boss";
 
-import {
-  applyMailboxSync,
-  listAllEmailAccountIds,
-  db,
-  getEmailAccountById,
-  reconcileMailboxes,
-} from "@kirimail/db";
+import { applyMailboxSync, db, getEmailAccountById, reconcileMailboxes } from "@kirimail/db";
 import { discoverMailboxes, syncMailboxes } from "@kirimail/mail";
 
-import { resolveImapCredentials } from "./credentials";
+import { resolveImapCredentials } from "../credentials";
 
-/** Register sync queues, handlers, and cron schedule. */
-export async function registerSync(boss: PgBoss, cronSchedule: string): Promise<void> {
-  // -- Setup for sync email account queue ------------------------------------
-
+/** Register the sync-email-account queue and handler. */
+export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
   await boss.createQueue("sync-email-account", {
     policy: "stately",
     retryLimit: 3,
@@ -48,37 +40,6 @@ export async function registerSync(boss: PgBoss, cronSchedule: string): Promise<
       }
     },
   );
-
-  // -- Setup for sync scheduler ----------------------------------------------
-
-  await boss.createQueue("sync-scheduler", {
-    policy: "stately",
-    retryLimit: 1,
-    expireInSeconds: 120,
-  });
-
-  await boss.work("sync-scheduler", { batchSize: 1 }, async (jobs: Job[]): Promise<void> => {
-    const job = jobs[0]!;
-    console.log(`[sync-scheduler] enqueuing sync jobs (trigger: ${job.id})`);
-
-    // Enqueues a sync job per email account with singletonKey to prevent duplicates.
-    // Per-send try/catch so one failed enqueue doesn't block remaining accounts.
-    const emailAccountIds = await listAllEmailAccountIds(db);
-    let enqueued = 0;
-    for (const id of emailAccountIds) {
-      try {
-        await boss.send("sync-email-account", { emailAccountId: id }, { singletonKey: id });
-        enqueued += 1;
-      } catch (error) {
-        console.error(`[sync-scheduler] failed to enqueue account ${id}:`, error);
-      }
-    }
-    console.log(
-      `[sync-scheduler] enqueued ${enqueued}/${emailAccountIds.length} sync-email-account job(s)`,
-    );
-  });
-
-  await boss.schedule("sync-scheduler", cronSchedule);
 }
 
 /**

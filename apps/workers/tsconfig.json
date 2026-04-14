@@ -10,6 +10,9 @@
     "noEmit": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "paths": {
+      "#test/*": ["./src/__tests__/*"]
+    }
   }
 }

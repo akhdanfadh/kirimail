@@ -1,19 +1,19 @@
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
+import {
+  cleanImapState,
+  createEncryptedEmailAccount,
+  createTestDb,
+  createTestUser,
+} from "#test/helpers";
 import * as schema from "@kirimail/db/schema";
 import { withImapConnection, testCredentials, seedMessage } from "@kirimail/mail/testing";
 import { randomUUID } from "node:crypto";
 import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { registerImapCommand } from "../imap-command";
-import {
-  cleanImapState,
-  createEncryptedEmailAccount,
-  createTestDb,
-  createTestUser,
-} from "./helpers";
+import { registerImapCommand } from "..";
 
 type Db = NodePgDatabase<typeof schema>;
 

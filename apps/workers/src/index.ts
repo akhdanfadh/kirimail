@@ -2,8 +2,7 @@ import { pool } from "@kirimail/db";
 import { PgBoss } from "pg-boss";
 
 import { workerEnv } from "./env";
-import { registerImapCommand } from "./imap-command";
-import { registerSync } from "./sync";
+import { registerImapCommand, registerSyncEmailAccount, registerSyncScheduler } from "./handlers";
 
 /** Handle returned by {@link startWorkers} for lifecycle management. */
 export interface WorkerHandle {
@@ -41,9 +40,12 @@ export async function startWorkers(): Promise<WorkerHandle> {
     return stopPromise;
   };
 
-  // Queue registrations - stop boss if registration fails partway through
+  // Queue registrations - stop boss if registration fails partway through.
   try {
-    await registerSync(boss, workerEnv.SYNC_CRON_SCHEDULE);
+    // sync-email-account should be registered before sync-scheduler since
+    // the scheduler sends to the sync-email-account queue.
+    await registerSyncEmailAccount(boss);
+    await registerSyncScheduler(boss, workerEnv.SYNC_CRON_SCHEDULE);
     await registerImapCommand(boss);
   } catch (err) {
     await boss.stop({ graceful: true, timeout: 5_000 }).catch(console.error);

@@ -4,7 +4,7 @@ import type { Job, PgBoss } from "pg-boss";
 import { db, getEmailAccountById } from "@kirimail/db";
 import { expungeMessages, ImapConnectionCache, moveMessages, storeFlags } from "@kirimail/mail";
 
-import { resolveImapCredentials } from "./credentials";
+import { resolveImapCredentials } from "../credentials";
 
 // ---------------------------------------------------------------------------
 // Queue registration

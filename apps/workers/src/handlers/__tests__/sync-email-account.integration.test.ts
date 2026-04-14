@@ -1,19 +1,19 @@
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
+import {
+  cleanImapState,
+  createEncryptedEmailAccount,
+  createTestDb,
+  createTestUser,
+} from "#test/helpers";
 import * as schema from "@kirimail/db/schema";
 import { withImapConnection, testCredentials, seedMessage } from "@kirimail/mail/testing";
 import { eq } from "drizzle-orm";
 import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { registerSync, syncEmailAccount } from "../sync";
-import {
-  cleanImapState,
-  createEncryptedEmailAccount,
-  createTestDb,
-  createTestUser,
-} from "./helpers";
+import { registerSyncEmailAccount, registerSyncScheduler, syncEmailAccount } from "..";
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -285,7 +285,7 @@ describe("end-to-end via pg-boss", () => {
     await boss.start();
 
     try {
-      await registerSync(boss, "59 23 31 12 *");
+      await registerSyncEmailAccount(boss);
 
       const spy = boss.getSpy("sync-email-account");
 
@@ -322,7 +322,8 @@ describe("end-to-end via pg-boss", () => {
     await boss.start();
 
     try {
-      await registerSync(boss, "59 23 31 12 *");
+      await registerSyncEmailAccount(boss);
+      await registerSyncScheduler(boss, "59 23 31 12 *");
 
       const syncSpy = boss.getSpy("sync-email-account");
       const schedulerSpy = boss.getSpy("sync-scheduler");
@@ -364,7 +365,7 @@ describe("worker lifecycle", () => {
     process.env.SYNC_CRON_SCHEDULE = "59 23 31 12 *";
 
     try {
-      const { startWorkers } = await import("../index");
+      const { startWorkers } = await import("../../index");
       const handle = await startWorkers();
 
       expect(handle).toBeDefined();
