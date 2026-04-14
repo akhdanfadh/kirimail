@@ -26,12 +26,14 @@ export async function registerSync(boss: PgBoss, cronSchedule: string): Promise<
     expireInSeconds: 600,
   });
 
-  // NOTE: boss.work's teamSize defaults to 1 here (one account syncs at a time).
-  // Safe to increase since stately + singletonKey already prevents overlapping
-  // syncs per account. Deferred until usage data shows this is a bottleneck.
+  // NOTE: localConcurrency: 3 lets multiple accounts sync in parallel.
+  // stately + singletonKey already prevents overlapping syncs per account,
+  // so this only parallelizes across accounts. Kept modest (not 5+) because
+  // each sync opens its own IMAP connection and does bulk DB writes -
+  // higher values pressure both the mail server and Postgres.
   await boss.work(
     "sync-email-account",
-    { batchSize: 1 },
+    { batchSize: 1, localConcurrency: 3 },
     async (jobs: Job<{ emailAccountId: string }>[]): Promise<void> => {
       const job = jobs[0]!;
       const { emailAccountId } = job.data;
