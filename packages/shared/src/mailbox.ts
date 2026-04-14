@@ -1,5 +1,13 @@
 /** Normalized mailbox roles used across the app. */
-export type MailboxRole = "inbox" | "sent" | "drafts" | "trash" | "junk" | "archive" | "custom";
+export type MailboxRole =
+  | "inbox"
+  | "sent"
+  | "drafts"
+  | "trash"
+  | "junk"
+  | "archive"
+  | "all"
+  | "custom";
 
 /**
  * Per-mailbox IMAP sync cursor for incremental sync.

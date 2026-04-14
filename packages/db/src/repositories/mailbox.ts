@@ -10,6 +10,23 @@ import { mailboxes, messages } from "../schema";
 
 type Db = NodePgDatabase<typeof schema>;
 
+/**
+ * Find a mailbox path by role for an account.
+ * Returns the path if a matching mailbox exists, `null` otherwise.
+ */
+export async function findMailboxPathByRole(
+  db: Db,
+  emailAccountId: string,
+  role: MailboxRole,
+): Promise<string | null> {
+  const [row] = await db
+    .select({ path: mailboxes.path })
+    .from(mailboxes)
+    .where(and(eq(mailboxes.emailAccountId, emailAccountId), eq(mailboxes.role, role)))
+    .limit(1);
+  return row?.path ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // applyMailboxSync
 // ---------------------------------------------------------------------------

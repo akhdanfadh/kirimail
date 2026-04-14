@@ -11,6 +11,7 @@ const SPECIAL_USE_MAP: Record<string, MailboxRole> = {
   "\\Trash": "trash",
   "\\Junk": "junk",
   "\\Archive": "archive",
+  "\\All": "all",
 };
 
 const NAME_PATTERN_MAP: Array<[string[], MailboxRole]> = [
@@ -41,6 +42,7 @@ const NAME_PATTERN_MAP: Array<[string[], MailboxRole]> = [
     "junk",
   ],
   [["archive", "archives"], "archive"],
+  [["all mail"], "all"],
 ];
 
 /**

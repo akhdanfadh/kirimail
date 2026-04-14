@@ -1,2 +1,2 @@
 export { getEmailAccountById, listAllEmailAccountIds } from "./email-account";
-export { applyMailboxSync, reconcileMailboxes } from "./mailbox";
+export { applyMailboxSync, findMailboxPathByRole, reconcileMailboxes } from "./mailbox";
