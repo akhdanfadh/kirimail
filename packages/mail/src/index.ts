@@ -2,6 +2,7 @@ export type {
   ExpungeMessagesInput,
   FlagOperation,
   MoveMessagesInput,
+  MoveResult,
   StoreFlagsInput,
 } from "./commands";
 export type { ImapConnectionCacheOptions, ImapCredentials } from "./connection";

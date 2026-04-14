@@ -13,6 +13,8 @@ export interface StoreFlagsInput {
   flags: string[];
   /** How to apply: add flags, remove flags, or replace all flags. */
   operation: FlagOperation;
+  /** If set, reject when the mailbox's current UIDVALIDITY differs (UIDs are stale after a mailbox rebuild). */
+  expectedUidValidity?: number;
 }
 
 /** Input for a mailbox-to-mailbox move. */
@@ -23,6 +25,8 @@ export interface MoveMessagesInput {
   destination: string;
   /** UIDs to move. */
   uids: string | number[];
+  /** If set, reject when the mailbox's current UIDVALIDITY differs (UIDs are stale after a mailbox rebuild). */
+  expectedUidValidity?: number;
 }
 
 /** Input for permanent message removal (STORE \Deleted + EXPUNGE). */
@@ -31,6 +35,8 @@ export interface ExpungeMessagesInput {
   mailbox: string;
   /** UIDs to expunge. */
   uids: string | number[];
+  /** If set, reject when the mailbox's current UIDVALIDITY differs (UIDs are stale after a mailbox rebuild). */
+  expectedUidValidity?: number;
 }
 
 /**
@@ -46,6 +52,14 @@ export interface ExpungeMessagesInput {
 export async function storeFlags(client: ImapFlow, input: StoreFlagsInput): Promise<boolean> {
   const lock = await client.getMailboxLock(input.mailbox);
   try {
+    if (
+      input.expectedUidValidity !== undefined &&
+      client.mailbox &&
+      Number(client.mailbox.uidValidity) !== input.expectedUidValidity
+    ) {
+      return false;
+    }
+
     // Returns true when the STORE command completes. Returns false on
     // server-level rejection, empty flags on add/remove, or flags not
     // permitted by the mailbox's permanentFlags.
@@ -63,12 +77,19 @@ export async function storeFlags(client: ImapFlow, input: StoreFlagsInput): Prom
   }
 }
 
+/** Result of a {@link moveMessages} call. */
+export interface MoveResult {
+  /** False if the server rejected the move (e.g., non-existent destination). */
+  moved: boolean;
+  /** Source UID -> destination UID map. Populated when the server supports UIDPLUS (RFC 4315). */
+  uidMap: Map<number, number>;
+}
+
 /**
  * Move messages from one mailbox to another via IMAP MOVE (RFC 6851).
  *
- * Returns a source UID -> destination UID map so the caller can update DB rows
- * (moved messages get new UIDs in the destination mailbox). The map is populated
- * when the server supports UIDPLUS (RFC 4315); empty otherwise.
+ * Returns a {@link MoveResult} with a boolean indicating success and a source
+ * UID -> destination UID map (populated when the server supports UIDPLUS).
  *
  * Acquires a mailbox lock internally and releases it in a finally block.
  * Connection lifecycle (connect/logout) is the caller's responsibility.
@@ -80,13 +101,22 @@ export async function storeFlags(client: ImapFlow, input: StoreFlagsInput): Prom
 export async function moveMessages(
   client: ImapFlow,
   input: MoveMessagesInput,
-): Promise<Map<number, number>> {
+): Promise<MoveResult> {
   const lock = await client.getMailboxLock(input.mailbox);
   try {
+    if (
+      input.expectedUidValidity !== undefined &&
+      client.mailbox &&
+      Number(client.mailbox.uidValidity) !== input.expectedUidValidity
+    ) {
+      return { moved: false, uidMap: new Map() };
+    }
+
     // Returns a CopyResponseObject with uidMap on success, or false on
     // server-level rejection (e.g., non-existent destination mailbox).
     const result = await client.messageMove(input.uids, input.destination, { uid: true });
-    return result && result.uidMap ? result.uidMap : new Map();
+    if (!result) return { moved: false, uidMap: new Map() };
+    return { moved: true, uidMap: result.uidMap ?? new Map() };
   } finally {
     lock.release();
   }
@@ -113,8 +143,16 @@ export async function expungeMessages(
 ): Promise<boolean> {
   const lock = await client.getMailboxLock(input.mailbox);
   try {
+    if (
+      input.expectedUidValidity !== undefined &&
+      client.mailbox &&
+      Number(client.mailbox.uidValidity) !== input.expectedUidValidity
+    ) {
+      return false;
+    }
+
     // Returns true when the EXPUNGE command completes (even if no messages
-    // matched the UIDs — a no-op is still a successful command). Returns false
+    // matched the UIDs - a no-op is still a successful command). Returns false
     // only on server-level rejection (e.g., read-only mailbox).
     return await client.messageDelete(input.uids, { uid: true });
   } finally {

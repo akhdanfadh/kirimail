@@ -176,33 +176,54 @@ describe("storeFlags", () => {
       expect(flags.has("\\Seen")).toBe(true);
     }
   });
+
+  it("rejects when expectedUidValidity does not match (mailbox rebuilt)", async () => {
+    const mailbox = "StoreFlagsUidValidity";
+    await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
+    await seedMessage(creds(), { mailbox });
+
+    const oldValidity = await withImapConnection(creds(), async (client) => {
+      const status = await client.status(mailbox, { uidValidity: true });
+      return Number(status.uidValidity);
+    });
+
+    // Rebuild mailbox - UIDVALIDITY changes, UIDs reset
+    await withImapConnection(creds(), async (client) => {
+      await client.mailboxDelete(mailbox);
+      await client.mailboxCreate(mailbox);
+    });
+    await seedMessage(creds(), { mailbox, headers: { subject: "New occupant" } });
+
+    const newValidity = await withImapConnection(creds(), async (client) => {
+      const status = await client.status(mailbox, { uidValidity: true });
+      return Number(status.uidValidity);
+    });
+    expect(newValidity).not.toBe(oldValidity);
+
+    const [uid] = await getUids(mailbox);
+
+    const result = await withImapConnection(creds(), (client) =>
+      storeFlags(client, {
+        mailbox,
+        uids: [uid!],
+        flags: ["\\Seen"],
+        operation: "add",
+        expectedUidValidity: oldValidity,
+      }),
+    );
+
+    expect(result).toBe(false);
+
+    // Message untouched
+    const flags = await fetchFlags(mailbox, uid!);
+    expect(flags.has("\\Seen")).toBe(false);
+  });
 });
 
 describe("moveMessages", () => {
-  it("moves a message to another mailbox", async () => {
+  it("moves a message and returns correct uidMap", async () => {
     const source = "MoveSource";
     const dest = "MoveDest";
-    await withImapConnection(creds(), async (client) => {
-      await client.mailboxCreate(source);
-      await client.mailboxCreate(dest);
-    });
-    await seedMessage(creds(), { mailbox: source, headers: { subject: "Move me" } });
-
-    const [uid] = await getUids(source);
-
-    await withImapConnection(creds(), (client) =>
-      moveMessages(client, { mailbox: source, destination: dest, uids: [uid!] }),
-    );
-
-    const sourceUids = await getUids(source);
-    const destUids = await getUids(dest);
-    expect(sourceUids).toHaveLength(0);
-    expect(destUids).toHaveLength(1);
-  });
-
-  it("returns source UID to destination UID map", async () => {
-    const source = "MoveUidMapSource";
-    const dest = "MoveUidMapDest";
     await withImapConnection(creds(), async (client) => {
       await client.mailboxCreate(source);
       await client.mailboxCreate(dest);
@@ -211,17 +232,20 @@ describe("moveMessages", () => {
 
     const [sourceUid] = await getUids(source);
 
-    const uidMap = await withImapConnection(creds(), (client) =>
+    const result = await withImapConnection(creds(), (client) =>
       moveMessages(client, { mailbox: source, destination: dest, uids: [sourceUid!] }),
     );
 
-    expect(uidMap).toBeInstanceOf(Map);
-    expect(uidMap.size).toBe(1);
-    expect(uidMap.has(sourceUid!)).toBe(true);
+    expect(result.moved).toBe(true);
+    expect(result.uidMap.size).toBe(1);
+    expect(result.uidMap.has(sourceUid!)).toBe(true);
 
-    // Destination UID should match what's actually in the destination mailbox
-    const [destUid] = await getUids(dest);
-    expect(uidMap.get(sourceUid!)).toBe(destUid);
+    // Verify actual mailbox state matches the reported result
+    const sourceUids = await getUids(source);
+    const destUids = await getUids(dest);
+    expect(sourceUids).toHaveLength(0);
+    expect(destUids).toHaveLength(1);
+    expect(result.uidMap.get(sourceUid!)).toBe(destUids[0]);
   });
 
   it("moves multiple messages", async () => {
@@ -238,11 +262,12 @@ describe("moveMessages", () => {
     const uids = await getUids(source);
     expect(uids).toHaveLength(3);
 
-    const uidMap = await withImapConnection(creds(), (client) =>
+    const result = await withImapConnection(creds(), (client) =>
       moveMessages(client, { mailbox: source, destination: dest, uids }),
     );
 
-    expect(uidMap.size).toBe(3);
+    expect(result.moved).toBe(true);
+    expect(result.uidMap.size).toBe(3);
     const sourceUids = await getUids(source);
     const destUids = await getUids(dest);
     expect(sourceUids).toHaveLength(0);
@@ -260,11 +285,11 @@ describe("moveMessages", () => {
 
     const [uid] = await getUids(source);
 
-    const uidMap = await withImapConnection(creds(), (client) =>
+    const result = await withImapConnection(creds(), (client) =>
       moveMessages(client, { mailbox: source, destination: dest, uids: [uid!] }),
     );
 
-    const destUid = uidMap.get(uid!);
+    const destUid = result.uidMap.get(uid!);
     expect(destUid).toBeDefined();
     const flags = await fetchFlags(dest, destUid!);
     expect(flags.has("\\Seen")).toBe(true);
@@ -281,34 +306,83 @@ describe("moveMessages", () => {
     await seedMessage(creds(), { mailbox: source, headers: { subject: "Range 1" } });
     await seedMessage(creds(), { mailbox: source, headers: { subject: "Range 2" } });
 
-    const uidMap = await withImapConnection(creds(), (client) =>
+    const result = await withImapConnection(creds(), (client) =>
       moveMessages(client, { mailbox: source, destination: dest, uids: "1:*" }),
     );
 
-    expect(uidMap.size).toBe(2);
+    expect(result.moved).toBe(true);
+    expect(result.uidMap.size).toBe(2);
     const sourceUids = await getUids(source);
     const destUids = await getUids(dest);
     expect(sourceUids).toHaveLength(0);
     expect(destUids).toHaveLength(2);
   });
 
-  it("returns empty map when destination does not exist", async () => {
+  it("reports moved:false when destination does not exist", async () => {
     const source = "MoveNoDestSource";
     await withImapConnection(creds(), (client) => client.mailboxCreate(source));
     await seedMessage(creds(), { mailbox: source });
 
     const [uid] = await getUids(source);
 
-    const uidMap = await withImapConnection(creds(), (client) =>
+    const result = await withImapConnection(creds(), (client) =>
       moveMessages(client, { mailbox: source, destination: "NoSuchMailbox", uids: [uid!] }),
     );
 
-    expect(uidMap).toBeInstanceOf(Map);
-    expect(uidMap.size).toBe(0);
+    expect(result.moved).toBe(false);
 
-    // Source message still exists (move failed silently)
+    // Source message still exists (server rejected the move)
     const remaining = await getUids(source);
     expect(remaining).toHaveLength(1);
+  });
+
+  it("reports moved:false for empty UID array", async () => {
+    const source = "MoveEmptyUids";
+    const dest = "MoveEmptyUidsDest";
+    await withImapConnection(creds(), async (client) => {
+      await client.mailboxCreate(source);
+      await client.mailboxCreate(dest);
+    });
+    await seedMessage(creds(), { mailbox: source });
+
+    const result = await withImapConnection(creds(), (client) =>
+      moveMessages(client, { mailbox: source, destination: dest, uids: [] }),
+    );
+
+    expect(result.moved).toBe(false);
+
+    // Source message untouched
+    const remaining = await getUids(source);
+    expect(remaining).toHaveLength(1);
+  });
+
+  it("reports moved:true with empty uidMap for non-existent source UID", async () => {
+    const source = "MoveGhostSource";
+    const dest = "MoveGhostDest";
+    await withImapConnection(creds(), async (client) => {
+      await client.mailboxCreate(source);
+      await client.mailboxCreate(dest);
+    });
+    await seedMessage(creds(), { mailbox: source });
+
+    const [realUid] = await getUids(source);
+
+    // Use a UID that doesn't exist - simulates a race where another client
+    // already moved/deleted the message between our UID fetch and MOVE.
+    const ghostUid = realUid! + 1000;
+    const result = await withImapConnection(creds(), (client) =>
+      moveMessages(client, { mailbox: source, destination: dest, uids: [ghostUid] }),
+    );
+
+    // Server accepts the command (no error), but nothing actually moved
+    expect(result.moved).toBe(true);
+    expect(result.uidMap.size).toBe(0);
+
+    // Original message still in source, nothing in dest
+    const sourceUids = await getUids(source);
+    const destUids = await getUids(dest);
+    expect(sourceUids).toHaveLength(1);
+    expect(destUids).toHaveLength(0);
   });
 });
 
