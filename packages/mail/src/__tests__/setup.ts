@@ -17,9 +17,13 @@ const STALWART_CONFIG = `
 hostname = "localhost"
 max-connections = 8192
 
-[server.listener."imap"]
-bind = ["[::]:143"]
+[server.listener.imap]
+bind = "[::]:143"
 protocol = "imap"
+
+[server.listener.http]
+bind = "[::]:8080"
+protocol = "http"
 
 [storage]
 data = "rocksdb"
@@ -71,12 +75,6 @@ class = "individual"
 name = "idleuser"
 secret = "testpass"
 email.0000 = "idleuser@localhost"
-
-[tracer."stdout"]
-type = "stdout"
-level = "info"
-ansi = false
-enable = true
 `.trimStart();
 
 // ---------------------------------------------------------------------------
@@ -99,7 +97,14 @@ export async function setup(project: TestProject) {
       { content: STALWART_CONFIG, target: "/opt/stalwart/etc/config.toml" },
     ])
     .withExposedPorts(143)
-    .withWaitStrategy(Wait.forLogMessage(/network\.listen-start.*listenerId = "imap"/))
+    .withHealthCheck({
+      test: ["CMD-SHELL", "stalwart-cli -u http://localhost:8080 -a server healthcheck"],
+      interval: 500,
+      timeout: 3_000,
+      retries: 120,
+    })
+    .withStartupTimeout(120_000)
+    .withWaitStrategy(Wait.forHealthCheck())
     .start();
 
   project.provide("stalwartHost", container.getHost());

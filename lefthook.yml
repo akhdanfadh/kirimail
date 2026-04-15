@@ -13,4 +13,4 @@ pre-commit:
 pre-push:
   jobs:
     - name: test
-      run: turbo run test
+      run: pnpm test

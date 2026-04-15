@@ -19,9 +19,13 @@ const STALWART_CONFIG = `
 hostname = "localhost"
 max-connections = 8192
 
-[server.listener."imap"]
-bind = ["[::]:143"]
+[server.listener.imap]
+bind = "[::]:143"
 protocol = "imap"
+
+[server.listener.http]
+bind = "[::]:8080"
+protocol = "http"
 
 [storage]
 data = "rocksdb"
@@ -55,12 +59,6 @@ class = "individual"
 name = "imapcommanduser"
 secret = "testpass"
 email.0000 = "imapcommanduser@localhost"
-
-[tracer."stdout"]
-type = "stdout"
-level = "info"
-ansi = false
-enable = true
 `.trimStart();
 
 // ---------------------------------------------------------------------------
@@ -93,7 +91,13 @@ export async function setup(project: TestProject) {
         POSTGRES_USER: "test",
         POSTGRES_PASSWORD: "test",
       })
-      .withWaitStrategy(Wait.forLogMessage(/ready to accept connections/, 2))
+      .withHealthCheck({
+        test: ["CMD-SHELL", "pg_isready -U test"],
+        interval: 500,
+        timeout: 3_000,
+        retries: 60,
+      })
+      .withWaitStrategy(Wait.forHealthCheck())
       .start(),
 
     new GenericContainer("stalwartlabs/stalwart:v0.15.5")
@@ -101,7 +105,14 @@ export async function setup(project: TestProject) {
         { content: STALWART_CONFIG, target: "/opt/stalwart/etc/config.toml" },
       ])
       .withExposedPorts(143)
-      .withWaitStrategy(Wait.forLogMessage(/network\.listen-start.*listenerId = "imap"/))
+      .withHealthCheck({
+        test: ["CMD-SHELL", "stalwart-cli -u http://localhost:8080 -a server healthcheck"],
+        interval: 500,
+        timeout: 3_000,
+        retries: 120,
+      })
+      .withStartupTimeout(120_000)
+      .withWaitStrategy(Wait.forHealthCheck())
       .start(),
   ]);
 

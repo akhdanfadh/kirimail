@@ -11,7 +11,7 @@
     "lint": "turbo run lint",
     "lint:fix": "turbo run lint:fix",
     "prepare": "lefthook install",
-    "test": "turbo run test",
+    "test": "turbo run test --concurrency 1",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {

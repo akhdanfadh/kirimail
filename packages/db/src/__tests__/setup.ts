@@ -25,7 +25,13 @@ export async function setup(project: TestProject) {
       POSTGRES_USER: "test",
       POSTGRES_PASSWORD: "test",
     })
-    .withWaitStrategy(Wait.forLogMessage(/ready to accept connections/, 2))
+    .withHealthCheck({
+      test: ["CMD-SHELL", "pg_isready -U test"],
+      interval: 500,
+      timeout: 3_000,
+      retries: 60,
+    })
+    .withWaitStrategy(Wait.forHealthCheck())
     .start();
 
   const host = container.getHost();
