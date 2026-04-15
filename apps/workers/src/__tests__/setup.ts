@@ -59,6 +59,12 @@ class = "individual"
 name = "imapcommanduser"
 secret = "testpass"
 email.0000 = "imapcommanduser@localhost"
+
+[directory."memory".principals.0003]
+class = "individual"
+name = "idleuser"
+secret = "testpass"
+email.0000 = "idleuser@localhost"
 `.trimStart();
 
 // ---------------------------------------------------------------------------

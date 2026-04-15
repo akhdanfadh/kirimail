@@ -2,7 +2,13 @@ import { pool } from "@kirimail/db";
 import { PgBoss } from "pg-boss";
 
 import { workerEnv } from "./env";
-import { registerImapCommand, registerSyncEmailAccount, registerSyncScheduler } from "./handlers";
+import {
+  closeImapConnections,
+  registerImapCommand,
+  registerSyncEmailAccount,
+  registerSyncScheduler,
+} from "./handlers";
+import { IdlePool } from "./idle-pool";
 
 /** Handle returned by {@link startWorkers} for lifecycle management. */
 export interface WorkerHandle {
@@ -31,26 +37,50 @@ export async function startWorkers(): Promise<WorkerHandle> {
   boss.on("warning", ({ message, data }) => console.warn("[pg-boss]", message, data));
   await boss.start();
 
-  // Graceful shutdown - caller owns signal handling (SIGTERM)
-  let stopPromise: Promise<void> | null = null;
-  const stop = () => {
-    if (!stopPromise) {
-      stopPromise = boss.stop({ graceful: true, timeout: 15_000 });
-    }
-    return stopPromise;
-  };
-
   // Queue registrations - stop boss if registration fails partway through.
+  // sync-email-account must be registered before the idle pool starts
+  // (the pool enqueues to this queue).
+  let idlePool: IdlePool | null = null;
   try {
-    // sync-email-account should be registered before sync-scheduler since
-    // the scheduler sends to the sync-email-account queue.
     await registerSyncEmailAccount(boss);
     await registerSyncScheduler(boss, workerEnv.SYNC_CRON_SCHEDULE);
     await registerImapCommand(boss);
+
+    idlePool = new IdlePool(boss);
+    await idlePool.startAll();
   } catch (err) {
-    await boss.stop({ graceful: true, timeout: 5_000 }).catch(console.error);
+    await idlePool?.stopAll().catch((e) => console.error("[workers] idle-pool cleanup:", e));
+    await boss
+      .stop({ graceful: true, timeout: 5_000 })
+      .catch((e) => console.error("[workers] pg-boss cleanup:", e));
+    try {
+      closeImapConnections();
+    } catch (e) {
+      console.error("[workers] imap-close cleanup:", e);
+    }
     throw err;
   }
+
+  // Graceful shutdown - caller owns signal handling (SIGTERM).
+  // Order: stop IDLE (no new events) -> drain pg-boss (in-flight jobs finish)
+  // -> close command connections (no longer needed).
+  let stopPromise: Promise<void> | null = null;
+  const stop = () => {
+    if (!stopPromise) {
+      stopPromise = (async () => {
+        await idlePool?.stopAll().catch((e) => console.error("[workers] idle-pool:", e));
+        await boss
+          .stop({ graceful: true, timeout: 15_000 })
+          .catch((e) => console.error("[workers] pg-boss:", e));
+        try {
+          closeImapConnections();
+        } catch (e) {
+          console.error("[workers] imap-close:", e);
+        }
+      })();
+    }
+    return stopPromise;
+  };
 
   return { stop };
 }
