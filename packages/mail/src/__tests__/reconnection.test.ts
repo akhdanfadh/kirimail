@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ReconnectionManagerOptions } from "../reconnection";
 
-import { ReconnectionManager, classifyImapError, computeBackoffDelay } from "../reconnection";
+import { classifyImapError } from "../errors";
+import { ReconnectionManager, computeBackoffDelay } from "../reconnection";
 
 // ---------------------------------------------------------------------------
 // classifyImapError
@@ -377,7 +378,7 @@ describe("ReconnectionManager", () => {
     await vi.advanceTimersByTimeAsync(100); // attempt 0 fires
     // attempt 1: 150ms
     await vi.advanceTimersByTimeAsync(150);
-    // attempt 2: 225ms — already exceeds transient ceiling (200ms)
+    // attempt 2: 225ms - already exceeds transient ceiling (200ms)
     // If auth ceiling weren't applied, this would be clamped to 200ms
     await vi.advanceTimersByTimeAsync(225);
     expect(connectFn).toHaveBeenCalledTimes(3);
@@ -812,7 +813,7 @@ describe("ReconnectionManager", () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(connectFn).toHaveBeenCalledTimes(1);
 
-    // Callback failure should NOT trigger auth handling — connect itself
+    // Callback failure should NOT trigger auth handling - connect itself
     // succeeded, so credentials were valid at connect time.
     expect(onAuthFailure).not.toHaveBeenCalled();
 
