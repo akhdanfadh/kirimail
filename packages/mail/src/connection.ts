@@ -14,6 +14,10 @@ export interface ImapCredentials {
    * STARTTLS (misconfigured or MITM downgrade) will proceed unencrypted.
    * Enforce STARTTLS via imapflow's `doSTARTTLS: true` option when strict
    * security is needed.
+   *
+   * NOTE: SmtpCredentials uses `security: "tls" | "starttls"` instead of
+   * a boolean - more expressive and maps directly to the DB column. Adopt
+   * the same pattern here for consistency across IMAP and SMTP credentials.
    */
   secure: boolean;
   /** Login username, usually the full email address. */

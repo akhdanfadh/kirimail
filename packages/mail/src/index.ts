@@ -25,6 +25,13 @@ export type {
 } from "./idle";
 export type { BackoffConfig, ReconnectionManagerOptions } from "./reconnection";
 export type {
+  SmtpCredentials,
+  SmtpEnvelope,
+  SmtpSecurity,
+  SmtpSendResult,
+  SmtpTransportCacheOptions,
+} from "./smtp";
+export type {
   SyncMailboxesOptions,
   SyncMailboxInput,
   SyncMailboxResult,
@@ -46,5 +53,6 @@ export { mailEnv } from "./env";
 export { classifyImapError, classifySmtpError } from "./errors";
 export { IdleManager } from "./idle";
 export { ReconnectionManager } from "./reconnection";
+export { appendToSentFolder, SmtpTransportCache } from "./smtp";
 export { syncMailboxes } from "./sync";
 export { buildForwardHeaders, buildReplyHeaders } from "./threading";
