@@ -3,6 +3,7 @@ import type { MessageAddress } from "@kirimail/shared";
 import {
   type AnyPgColumn,
   bigint,
+  boolean,
   index,
   integer,
   jsonb,
@@ -61,8 +62,8 @@ export const mailboxes = pgTable(
     }),
 
     // IMAP sync cursor state
-    // - `bigint` as IMAP UIDs are 32-bit per RFC 3501 §2.3.1.1 and unsigned per §9
-    // - `mode: "number"` uses JS number internally as BigInt is not JSON-serializable per ECMA-262 §25.5.2.2
+    // - `bigint` as IMAP UIDs are 32-bit per RFC 3501 #2.3.1.1 and unsigned per #9
+    // - `mode: "number"` uses JS number internally as BigInt is not JSON-serializable per ECMA-262 #25.5.2.2
     uidValidity: bigint("uid_validity", { mode: "number" }),
     uidNext: bigint("uid_next", { mode: "number" }),
     messageCount: integer("message_count"),
@@ -138,6 +139,54 @@ export const messages = pgTable(
       table.mailboxId,
       table.providerUid,
       table.uidValidity,
+    ),
+  ],
+);
+
+/**
+ * SMTP send identities linked to an email account.
+ *
+ * Separate from `emailAccounts` because SMTP is a universal send mechanism
+ * that exists independently of the read adapter (IMAP, Gmail API, JMAP).
+ * Provides 1:N send-as support per account without schema migration.
+ *
+ */
+export const smtpIdentities = pgTable(
+  "smtp_identities",
+  {
+    id: text("id").primaryKey(),
+    emailAccountId: text("email_account_id")
+      .notNull()
+      .references(() => emailAccounts.id, { onDelete: "cascade" }),
+    fromAddress: text("from_address").notNull(),
+
+    // SMTP connection
+    smtpHost: text("smtp_host").notNull(),
+    smtpPort: integer("smtp_port").notNull(),
+    /** Stores `SmtpSecurity` values from `@kirimail/mail` - "tls" | "starttls" | "none" (dev/test only). */
+    smtpSecurity: text("smtp_security").notNull(),
+    /** Whether to validate the server's TLS certificate. Default: true. Set false only for self-signed certs. */
+    rejectUnauthorized: boolean("reject_unauthorized").notNull().default(true),
+
+    // Credential encryption (same AES-256-GCM CredentialEnvelope as emailAccounts)
+    encryptedPassword: text("encrypted_password").notNull(),
+    keyVersion: integer("key_version").notNull().default(1),
+
+    // NOTE: Add isPrimary when the add-account flow needs a default "from" identity for compose.
+    // isPrimary: boolean("is_primary").notNull().default(false),
+    appendToSent: boolean("append_to_sent").notNull().default(true),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("smtp_identities_email_account_id_idx").on(table.emailAccountId),
+    unique("smtp_identities_email_account_id_from_address_uniq").on(
+      table.emailAccountId,
+      table.fromAddress,
     ),
   ],
 );
