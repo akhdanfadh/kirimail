@@ -10,6 +10,12 @@ export type { ImapConnectionCacheOptions, ImapCredentials } from "./connection";
 export type { CredentialEnvelope } from "./crypto";
 export type { DiscoveryResult } from "./discovery";
 export type {
+  ClassifiedImapError,
+  ImapErrorCategory,
+  ClassifiedSmtpError,
+  SmtpErrorCategory,
+} from "./errors";
+export type {
   ExistsInfo,
   ExpungeInfo,
   FlagsInfo,
@@ -17,7 +23,6 @@ export type {
   IdleManagerOptions,
   ReconnectedInfo,
 } from "./idle";
-export type { ClassifiedImapError, ImapErrorCategory } from "./errors";
 export type { BackoffConfig, ReconnectionManagerOptions } from "./reconnection";
 export type {
   SyncMailboxesOptions,
@@ -38,8 +43,8 @@ export {
 } from "./crypto";
 export { discoverMailboxes } from "./discovery";
 export { mailEnv } from "./env";
+export { classifyImapError, classifySmtpError } from "./errors";
 export { IdleManager } from "./idle";
-export { classifyImapError } from "./errors";
 export { ReconnectionManager } from "./reconnection";
 export { syncMailboxes } from "./sync";
 export { buildForwardHeaders, buildReplyHeaders } from "./threading";
