@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImapCredentials } from "../connection";
 
 // ---------------------------------------------------------------------------
-// Mock imapflow — ImapConnectionCache calls createImapClient internally,
+// Mock imapflow - ImapConnectionCache calls createImapClient internally,
 // which constructs ImapFlow. We intercept at the constructor level.
 // ---------------------------------------------------------------------------
 
@@ -118,7 +118,7 @@ describe("ImapConnectionCache", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(captured!.close).toHaveBeenCalledTimes(1);
 
-    // User comes back after idle — should get a fresh connection
+    // User comes back after idle - should get a fresh connection
     let afterEviction: unknown;
     await cache.execute("acc1", TEST_CREDS, async (client) => {
       afterEviction = client;
@@ -141,7 +141,7 @@ describe("ImapConnectionCache", () => {
 
     await cache.execute("acc1", TEST_CREDS, async () => {});
 
-    // Advance another 4s — 8s total from first call, but only 4s from reset
+    // Advance another 4s - 8s total from first call, but only 4s from reset
     await vi.advanceTimersByTimeAsync(4_000);
     expect(captured!.close).not.toHaveBeenCalled();
 
@@ -206,7 +206,7 @@ describe("ImapConnectionCache", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     expect(captured!.close).not.toHaveBeenCalled();
 
-    // Finish the operation — now timer should start
+    // Finish the operation - now timer should start
     resolveOp();
     await longOp;
 
@@ -238,13 +238,13 @@ describe("ImapConnectionCache", () => {
       });
     });
 
-    // opA throws — refcount drops from 2 to 1, no timer yet
+    // opA throws - refcount drops from 2 to 1, no timer yet
     resolveOpA();
     await expect(opA).rejects.toThrow("command failed");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(captured!.close).not.toHaveBeenCalled();
 
-    // opB finishes — refcount drops to 0, timer starts
+    // opB finishes - refcount drops to 0, timer starts
     resolveOpB();
     await opB;
     await vi.advanceTimersByTimeAsync(1_000);
@@ -279,12 +279,12 @@ describe("ImapConnectionCache", () => {
     // Let B's connect complete
     await vi.advanceTimersByTimeAsync(0);
 
-    // opB finishes first — refcount drops but is not zero (opA still in-flight)
+    // opB finishes first - refcount drops but is not zero (opA still in-flight)
     expect(await opB).toBe("marked");
     await vi.advanceTimersByTimeAsync(1_000);
     expect(clientB.close).not.toHaveBeenCalled(); // timer must NOT fire yet
 
-    // opA finishes — refcount reaches zero, timer starts on clientB
+    // opA finishes - refcount reaches zero, timer starts on clientB
     resolveOpA();
     expect(await opA).toBe("synced");
 
@@ -431,7 +431,7 @@ describe("ImapConnectionCache", () => {
     });
     expect(captured).toBe(clientB);
 
-    // Stale close event from client A fires again — should NOT evict B
+    // Stale close event from client A fires again - should NOT evict B
     clientA._emitClose();
 
     let afterStale: unknown;
@@ -472,7 +472,7 @@ describe("ImapConnectionCache", () => {
     await freshPromise;
     expect(captured).toBe(freshClient);
 
-    // Stale connect resolves — should be discarded, not overwrite freshClient
+    // Stale connect resolves - should be discarded, not overwrite freshClient
     resolveConnect();
     await expect(stalePromise).rejects.toThrow("cache closed during connect");
     expect(slowClient.close).toHaveBeenCalledTimes(1);
@@ -526,14 +526,14 @@ describe("ImapConnectionCache", () => {
     // closeAll while connect is in-flight
     cache.closeAll();
 
-    // Let connect resolve — the connection should be discarded, not resurrected
+    // Let connect resolve - the connection should be discarded, not resurrected
     resolveConnect();
 
     await expect(promise).rejects.toThrow("cache closed during connect");
     expect(mockClient.close).toHaveBeenCalledTimes(1);
   });
 
-  it("closes all cached connections and allows fresh ones after", async () => {
+  it("closes all cached connections across accounts", async () => {
     const cache = new ImapConnectionCache();
     const clients: MockClient[] = [];
 
@@ -548,14 +548,6 @@ describe("ImapConnectionCache", () => {
 
     expect(clients[0]!.close).toHaveBeenCalledTimes(1);
     expect(clients[1]!.close).toHaveBeenCalledTimes(1);
-
-    // Cache is reusable after shutdown
-    let fresh: unknown;
-    await cache.execute("acc1", TEST_CREDS, async (client) => {
-      fresh = client;
-    });
-    expect(fresh).not.toBe(clients[0]);
-    cache.closeAll();
   });
 
   it("does not break in-flight operations when closeAll is called", async () => {
@@ -574,7 +566,7 @@ describe("ImapConnectionCache", () => {
     // Let connect complete
     await vi.advanceTimersByTimeAsync(0);
 
-    // closeAll while fn is running — evicts the connection
+    // closeAll while fn is running - evicts the connection
     cache.closeAll();
     expect(captured!.close).toHaveBeenCalled();
 

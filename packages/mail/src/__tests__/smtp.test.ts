@@ -305,7 +305,39 @@ describe("SmtpTransportCache", () => {
     cache.closeAll();
   });
 
-  it("closeAll closes all transports, cache reusable after", async () => {
+  it("closeAll fired during stripBcc await rejects the send without creating a transport", async () => {
+    const cache = new SmtpTransportCache();
+
+    // Make stripBcc block on a promise we control, so we can interleave
+    // closeAll() between the initial isClosed check (before stripBcc) and
+    // getOrCreate() (after stripBcc) - the TOCTOU window where a racing
+    // closeAll would otherwise leak a newly-created transport.
+    let resolveStripBcc!: (buf: Buffer) => void;
+    mockStripBcc.mockImplementationOnce(
+      (raw: Buffer) =>
+        new Promise<Buffer>((resolve) => {
+          resolveStripBcc = () => resolve(raw);
+        }),
+    );
+
+    // A transport is available; if the race bug existed, send() would
+    // shift it from pendingTransports and proceed to sendMail on it.
+    const transport = createMockTransport();
+    pendingTransports.push(transport);
+
+    const sendPromise = cache.send("acc1", TEST_CREDS, TEST_RAW, TEST_ENVELOPE);
+    // send() is now suspended on await stripBcc(raw). Fire closeAll()
+    // synchronously - this is exactly the race the post-await recheck closes.
+    cache.closeAll();
+    resolveStripBcc(TEST_RAW);
+
+    await expect(sendPromise).rejects.toThrow(/closed/i);
+    // Transport was never pulled from the pending list or used.
+    expect(pendingTransports).toContain(transport);
+    expect(transport.sendMail).not.toHaveBeenCalled();
+  });
+
+  it("closeAll closes cached transports across all accounts", async () => {
     const cache = new SmtpTransportCache();
     const transports: MockTransport[] = [];
 
@@ -320,13 +352,6 @@ describe("SmtpTransportCache", () => {
     cache.closeAll();
     expect(transports[0]!.close).toHaveBeenCalledTimes(1);
     expect(transports[1]!.close).toHaveBeenCalledTimes(1);
-
-    // Cache is reusable after closeAll
-    const fresh = createMockTransport();
-    pendingTransports.push(fresh);
-    await cache.send("acc1", TEST_CREDS, TEST_RAW, TEST_ENVELOPE);
-    expect(fresh.sendMail).toHaveBeenCalledTimes(1);
-    cache.closeAll();
   });
 
   it("closeAll does not break in-flight sends", async () => {
@@ -396,19 +421,19 @@ describe("SmtpTransportCache", () => {
 
     await cache.send("acc1", TEST_CREDS, TEST_RAW, TEST_ENVELOPE);
 
-    // Double close(id) - second is a no-op
+    // Double close(id) - second is a no-op; cache remains usable for new sends.
     cache.close("acc1");
     cache.close("acc1");
     expect(transport.close).toHaveBeenCalledTimes(1);
 
-    // closeAll after close - no-op
-    cache.closeAll();
-    expect(transport.close).toHaveBeenCalledTimes(1);
-
-    // closeAll twice - second is a no-op
+    // close(id) is per-account; the cache is NOT terminal, so a fresh send
+    // for the same account creates a new transport.
     const transport2 = createMockTransport();
     pendingTransports.push(transport2);
     await cache.send("acc1", TEST_CREDS, TEST_RAW, TEST_ENVELOPE);
+    expect(transport2.sendMail).toHaveBeenCalledTimes(1);
+
+    // closeAll is terminal; calling it twice just re-asserts the terminal state.
     cache.closeAll();
     cache.closeAll();
     expect(transport2.close).toHaveBeenCalledTimes(1);

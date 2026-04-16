@@ -160,6 +160,8 @@ export class ImapConnectionCache {
   private resetVersion = 0;
   /** Per-account version - incremented by {@link close} to invalidate in-flight connect() for that account. */
   private readonly accountResetVersion = new Map<string, number>();
+  /** Set by {@link closeAll} - once closed, the cache rejects all new {@link execute} calls. */
+  private isClosed = false;
 
   constructor(options?: ImapConnectionCacheOptions) {
     this.inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 60_000;
@@ -179,7 +181,15 @@ export class ImapConnectionCache {
     creds: ImapCredentials,
     fn: (client: ImapFlow) => Promise<T>,
   ): Promise<T> {
+    // Terminal after closeAll()
+    if (this.isClosed) {
+      throw new Error("ImapConnectionCache is closed");
+    }
+
     const client = await this.getOrConnect(emailAccountId, creds);
+    if (this.isClosed) {
+      throw new Error("ImapConnectionCache is closed");
+    }
 
     // Suspend inactivity timer while an operation is in-flight
     const entry = this.active.get(emailAccountId);
@@ -225,8 +235,13 @@ export class ImapConnectionCache {
     this.evict(emailAccountId);
   }
 
-  /** Close all cached connections and invalidate in-flight connect attempts. Idempotent. */
+  /**
+   * Close all cached connections, invalidate in-flight connect attempts,
+   * and mark the cache terminal. Subsequent {@link execute} calls throw.
+   * Idempotent.
+   */
   closeAll(): void {
+    this.isClosed = true;
     this.resetVersion++;
     for (const [id] of this.active) this.evict(id);
     this.connecting.clear();

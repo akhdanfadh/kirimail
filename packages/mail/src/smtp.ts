@@ -116,6 +116,8 @@ export class SmtpTransportCache {
   >();
   /** Number of in-flight {@link send} calls per account. Timer only starts when this reaches 0. */
   private readonly inflight = new Map<string, number>();
+  /** Set by {@link closeAll} - once closed, the cache rejects all new {@link send} calls. */
+  private isClosed = false;
 
   constructor(options?: SmtpTransportCacheOptions) {
     this.inactivityTimeoutMs = options?.inactivityTimeoutMs ?? 5 * 60 * 1000;
@@ -135,10 +137,16 @@ export class SmtpTransportCache {
     raw: Buffer,
     envelope: SmtpEnvelope,
   ): Promise<SmtpSendResult> {
-    // Strip BCC before touching the cache - stripBcc is async (stream-based)
-    // and we don't want an await between getOrCreate and inflight increment
-    // where the inactivity timer could fire and evict the transport.
+    // Terminal after closeAll()
+    if (this.isClosed) {
+      throw new Error("SmtpTransportCache is closed");
+    }
+
     const stripped = await stripBcc(raw);
+    if (this.isClosed) {
+      throw new Error("SmtpTransportCache is closed");
+    }
+
     const transport = this.getOrCreate(emailAccountId, creds);
 
     // Suspend inactivity timer while a send is in-flight
@@ -184,12 +192,12 @@ export class SmtpTransportCache {
     this.evict(emailAccountId);
   }
 
-  // NOTE: closeAll() currently allows new send() calls after eviction.
-  // Make it terminal (set a closed flag, reject new sends) so process
-  // shutdown can't leak transports. Apply same change to ImapConnectionCache.
-
-  /** Close all cached transports. Idempotent. */
+  /**
+   * Close all cached transports and mark the cache terminal. Subsequent
+   * {@link send} calls throw. Idempotent.
+   */
   closeAll(): void {
+    this.isClosed = true;
     for (const [id] of this.active) this.evict(id);
     // inflight is NOT cleared - in-flight operations decrement naturally,
     // and clearing would corrupt counts if a new send() call arrives
