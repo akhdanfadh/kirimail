@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------
+// IMAP error classification
+// ---------------------------------------------------------------------------
+
 /** Category of an IMAP error, determining retry strategy. */
 export type ImapErrorCategory =
   | "auth" // bad credentials
@@ -6,7 +10,7 @@ export type ImapErrorCategory =
   | "protocol"; // non-retryable server error, catch-all
 
 /** Result of classifying an IMAP error. */
-export interface ClassifiedError {
+export interface ClassifiedImapError {
   category: ImapErrorCategory;
   message: string;
   /** Node.js or IMAP error code when available (e.g., "ETIMEDOUT"). */
@@ -23,7 +27,7 @@ export interface ClassifiedError {
  * @see https://nodejs.org/api/errors.html#common-system-errors
  * @see https://github.com/postalsys/imapflow/blob/master/lib/imap-flow.js
  */
-const TRANSIENT_CODES = new Set([
+const IMAP_TRANSIENT_CODES = new Set([
   // Node.js socket errors
   "ETIMEDOUT",
   "ECONNRESET",
@@ -49,13 +53,13 @@ const TRANSIENT_CODES = new Set([
  * Classify an IMAP error into a retry category. Mainly adjusted for imapflow.
  *
  * Accepts any value (including `null` for a clean close) and returns a
- * {@link ClassifiedError} indicating whether the caller should retry,
+ * {@link ClassifiedImapError} indicating whether the caller should retry,
  * surface an auth problem, back off for rate-limiting, or give up.
  *
  * @see https://github.com/postalsys/imapflow/blob/master/lib/tools.js - AuthenticationFailure class
  * @see https://github.com/postalsys/emailengine/blob/master/lib/email-client/base-client.js - isTransientError
  */
-export function classifyImapError(err: unknown): ClassifiedError {
+export function classifyImapError(err: unknown): ClassifiedImapError {
   if (err == null) {
     // imapflow's close event always fires with no argument - errors arrive
     // via a separate 'error' event. A null err means the connection closed
@@ -89,7 +93,7 @@ export function classifyImapError(err: unknown): ClassifiedError {
   }
 
   // 2. Transient - Node.js socket-level network errors
-  if (code && TRANSIENT_CODES.has(code)) {
+  if (code && IMAP_TRANSIENT_CODES.has(code)) {
     return { category: "transient", message, code };
   }
 

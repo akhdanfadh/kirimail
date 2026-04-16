@@ -17,7 +17,7 @@ export type {
   IdleManagerOptions,
   ReconnectedInfo,
 } from "./idle";
-export type { ClassifiedError, ImapErrorCategory } from "./errors";
+export type { ClassifiedImapError, ImapErrorCategory } from "./errors";
 export type { BackoffConfig, ReconnectionManagerOptions } from "./reconnection";
 export type {
   SyncMailboxesOptions,
