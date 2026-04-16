@@ -19,11 +19,15 @@
     "@kirimail/env": "workspace:*",
     "@kirimail/shared": "workspace:*",
     "@t3-oss/env-core": "^0.13.11",
+    "@zone-eu/mailsplit": "^5.4.9",
     "imapflow": "^1.2.18",
+    "nodemailer": "^8.0.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^25.5.0",
+    "@types/nodemailer": "^8.0.0",
+    "postal-mime": "^2.7.4",
     "testcontainers": "^11.13.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
