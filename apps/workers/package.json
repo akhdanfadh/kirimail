@@ -27,8 +27,8 @@
   "devDependencies": {
     "@types/node": "^25.5.0",
     "@types/pg": "^8.20.0",
-    "drizzle-kit": "^0.31.10",
-    "drizzle-orm": "^0.45.1",
+    "drizzle-kit": "1.0.0-beta.22",
+    "drizzle-orm": "1.0.0-beta.22",
     "pg": "^8.20.0",
     "testcontainers": "^11.13.0",
     "tsdown": "^0.21.7",

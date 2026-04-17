@@ -18,10 +18,10 @@ type Db = NodePgDatabase<typeof schema>;
 /** Create a Drizzle client connected to the per-worker test database. */
 export function createTestDb(): { db: Db; pool: Pool } {
   // Uses process.env (not inject) because the per-worker database URL is
-  // constructed in setup-env.ts, not in globalSetup — inject only carries
+  // constructed in setup-env.ts, not in globalSetup - inject only carries
   // values from globalSetup's project.provide().
   const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-  const db = drizzle(pool, { schema });
+  const db = drizzle({ client: pool, schema });
   return { db, pool };
 }
 

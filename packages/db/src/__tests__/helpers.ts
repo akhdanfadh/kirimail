@@ -18,7 +18,7 @@ type Db = NodePgDatabase<typeof schema>;
 /** Create a Drizzle client connected to the test container. */
 export function createTestDb(): { db: Db; pool: Pool } {
   const pool = new Pool({ connectionString: inject("databaseUrl") });
-  const db = drizzle(pool, { schema });
+  const db = drizzle({ client: pool, schema });
   return { db, pool };
 }
 

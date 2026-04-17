@@ -4,7 +4,7 @@ import type { TestProject } from "vitest/node";
 // Import schema directly (not @kirimail/db) to avoid triggering the
 // module-level Pool construction before DATABASE_URL is available.
 import * as schema from "@kirimail/db/schema";
-import { pushSchema } from "drizzle-kit/api";
+import { pushSchema } from "drizzle-kit/api-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { randomBytes } from "node:crypto";
 import { Pool } from "pg";
@@ -133,7 +133,7 @@ export async function setup(project: TestProject) {
   const templateUrl = `postgresql://test:test@${host}:${port}/kirimail_test`;
 
   const templatePool = new Pool({ connectionString: templateUrl });
-  const db = drizzle(templatePool);
+  const db = drizzle({ client: templatePool });
   const { apply } = await pushSchema(schema, db);
   await apply();
   await templatePool.end();

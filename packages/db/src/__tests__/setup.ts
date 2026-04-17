@@ -1,7 +1,7 @@
 import type { StartedTestContainer } from "testcontainers";
 import type { TestProject } from "vitest/node";
 
-import { pushSchema } from "drizzle-kit/api";
+import { pushSchema } from "drizzle-kit/api-postgres";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import { GenericContainer, Wait } from "testcontainers";
@@ -39,7 +39,7 @@ export async function setup(project: TestProject) {
   const databaseUrl = `postgresql://test:test@${host}:${port}/kirimail_test`;
 
   const pool = new Pool({ connectionString: databaseUrl });
-  const db = drizzle(pool);
+  const db = drizzle({ client: pool });
   const { apply } = await pushSchema(schema, db);
   await apply();
   await pool.end();

@@ -32,7 +32,7 @@ try {
   await client.query("SELECT pg_advisory_lock(hashtext('drizzle_migration'))");
   locked = true;
   await client.query("SET statement_timeout = 0");
-  await migrate(drizzle(client), { migrationsFolder });
+  await migrate(drizzle({ client }), { migrationsFolder });
   console.log("[migrate] done");
 } catch (err) {
   console.error("[migrate] failed:", err);
