@@ -55,16 +55,23 @@ function buildReferencesChain(referenced: ReferencedMessage): string {
   return referenced.messageId;
 }
 
-/** Verify that a Message-ID is angle-bracketed per RFC 5322 #3.6.4. */
-function assertMessageId(messageId: string): void {
-  if (
-    !messageId ||
-    messageId.length < 3 ||
-    !messageId.startsWith("<") ||
-    !messageId.endsWith(">")
-  ) {
+// Loose shape validator: angle-bracketed, one "@", non-empty sides, no
+// whitespace. Does NOT enforce dot-atom-text - legacy MUAs emit quoted-
+// string local-parts we must still accept for reply/forward. Whitespace
+// rejection matters because nodemailer silently strips internal spaces
+// in References/In-Reply-To (mime-node _encodeHeaderValue), so "<a b@c>"
+// would ship as "<ab@c>" and break the recipient's thread-match.
+const MESSAGE_ID_PATTERN = /^<[^<>@\s]+@[^<>@\s]+>$/;
+
+/**
+ * Verify that a Message-ID matches the shape encoded in
+ * {@link MESSAGE_ID_PATTERN}. Throws on violation.
+ */
+export function assertMessageId(messageId: string): void {
+  if (!messageId || !MESSAGE_ID_PATTERN.test(messageId)) {
     throw new Error(
-      `messageId must be angle-bracketed (e.g., "<id@domain>"), got: ${JSON.stringify(messageId)}`,
+      `messageId must be angle-bracketed with non-empty id-left and id-right, ` +
+        `no whitespace or control chars (e.g., "<id@domain>"), got: ${JSON.stringify(messageId)}`,
     );
   }
 }
