@@ -4,9 +4,6 @@ import type SMTPPool from "nodemailer/lib/smtp-pool";
 import { createHash } from "node:crypto";
 import { createTransport } from "nodemailer";
 
-import type { ImapConnectionCache, ImapCredentials } from "./connection";
-
-import { appendMessage, ImapPrimitiveNonRetriableError } from "./commands";
 import { stripBcc } from "./compose";
 
 /**
@@ -321,58 +318,6 @@ export class SmtpTransportCache {
       entry.transport.close();
     } catch {
       // Already closed - safe to ignore.
-    }
-  }
-}
-
-/**
- * APPEND raw MIME bytes to the Sent mailbox via IMAP. Best-effort - never
- * throws. Pass the un-stripped raw bytes (BCC preserved) so the sender
- * can see who they BCC'd.
- *
- * @see https://github.com/postalsys/emailengine/blob/master/lib/email-client/base-client.js - uploadToSentFolder
- */
-export async function appendToSentFolder(
-  imapCache: ImapConnectionCache,
-  emailAccountId: string,
-  imapCreds: ImapCredentials,
-  raw: Buffer,
-  sentMailboxPath: string,
-): Promise<void> {
-  // NOTE: APPEND is unconditional. Gmail and Outlook auto-copy to Sent
-  // on SMTP send, causing duplicates. Per-account appendToSent toggle
-  // with provider-default heuristic is deferred.
-  try {
-    await imapCache.execute(emailAccountId, imapCreds, async (client) => {
-      await appendMessage(client, { mailbox: sentMailboxPath, raw, flags: ["\\Seen"] });
-    });
-  } catch (err) {
-    // Best-effort: the message was already delivered via SMTP. A failed
-    // APPEND means the Sent folder won't have a copy, but the recipient
-    // received the email. The sync pipeline will pick it up if the
-    // provider auto-copies (Gmail). The send-email worker MUST NOT retry
-    // on this failure - retrying would re-deliver the message via SMTP.
-    //
-    // TODO: For the connection-dropped case (raw Error from appendMessage
-    // when `!client.usable`), a one-shot fresh-connection retry inside
-    // this function would recover the Sent copy without re-sending. Needs
-    // Message-ID-based dedup first to avoid duplicates when the original
-    // APPEND was applied server-side but the response was lost. Defer
-    // until reports of missing Sent copies appear.
-    //
-    // NOTE: Replace with structured logging when available.
-    const message = err instanceof Error ? err.message : String(err);
-    if (err instanceof ImapPrimitiveNonRetriableError) {
-      // Programming error or genuine permanent rejection (empty destination,
-      // not-authenticated state) - elevated severity so it's grep-able from
-      // transient failures below.
-      console.error(
-        `[sent] APPEND to "${sentMailboxPath}" non-retriable for ${emailAccountId}:`,
-        message,
-      );
-    } else {
-      // Transient or external (server NO, network, dropped connection).
-      console.warn(`[sent] APPEND to "${sentMailboxPath}" failed for ${emailAccountId}:`, message);
     }
   }
 }

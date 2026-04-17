@@ -36,6 +36,25 @@ export class ImapPrimitiveNonRetriableError extends Error {
 }
 
 /**
+ * Thrown by {@link appendMessage} when the handed-over connection's socket
+ * dropped between handover and the APPEND command (detected via
+ * `!client.usable` on a falsy `client.append` return).
+ *
+ * Distinct from {@link ImapPrimitiveNonRetriableError} so callers can
+ * discriminate recoverable transient disconnects from genuine preconditions
+ * without string-sniffing. Recovery (re-APPEND + Message-ID dedup) is the
+ * caller's responsibility.
+ */
+export class ImapAppendConnectionLostError extends Error {
+  readonly mailbox: string;
+  constructor(mailbox: string) {
+    super(`IMAP APPEND failed: connection no longer usable (mailbox: ${JSON.stringify(mailbox)})`);
+    this.name = "ImapAppendConnectionLostError";
+    this.mailbox = mailbox;
+  }
+}
+
+/**
  * True when the current mailbox's UIDVALIDITY matches `expected` (or no
  * expectation was set). Caller must hold the mailbox lock.
  *
@@ -268,10 +287,7 @@ export async function appendMessage(
     // precondition (programming error). If not, the socket dropped between
     // handover and APPEND - transient, let the queue retry.
     if (!client.usable) {
-      throw new Error(
-        `IMAP APPEND failed: connection no longer usable ` +
-          `(mailbox: ${JSON.stringify(input.mailbox)})`,
-      );
+      throw new ImapAppendConnectionLostError(input.mailbox);
     }
     throw new ImapPrimitiveNonRetriableError(
       `IMAP APPEND returned no result on a usable connection ` +

@@ -43,7 +43,7 @@ vi.mock("nodemailer", () => ({
 const mockStripBcc = vi.hoisted(() => vi.fn((raw: Buffer) => Promise.resolve(raw)));
 vi.mock("../compose", () => ({ stripBcc: mockStripBcc }));
 
-const { SmtpTransportCache, appendToSentFolder } = await import("../smtp");
+const { SmtpTransportCache } = await import("../smtp");
 
 const TEST_CREDS: SmtpCredentials = {
   host: "smtp.example.com",
@@ -592,63 +592,5 @@ describe("SmtpTransportCache", () => {
     );
     // stripBcc throws before getOrCreate - no transport created or leaked
     cache.closeAll(); // no-op, nothing to close
-  });
-});
-
-// ---------------------------------------------------------------------------
-// appendToSentFolder
-// ---------------------------------------------------------------------------
-
-describe("appendToSentFolder", () => {
-  const imapCreds = {
-    host: "imap.example.com",
-    port: 993,
-    secure: true,
-    user: "test@example.com",
-    pass: "password",
-  };
-
-  it("calls client.append with correct path, raw, and \\Seen flag", async () => {
-    const mockAppend = vi.fn().mockResolvedValue(undefined);
-    const mockCache = {
-      execute: vi.fn(
-        async (
-          _id: string,
-          _creds: unknown,
-          fn: (client: { append: typeof mockAppend }) => Promise<void>,
-        ) => fn({ append: mockAppend }),
-      ),
-    };
-
-    const raw = Buffer.from("Subject: test\r\nBcc: hidden@x.com\r\n\r\nBody");
-    await appendToSentFolder(mockCache as never, "acc1", imapCreds, raw, "Sent");
-
-    expect(mockCache.execute).toHaveBeenCalledWith("acc1", imapCreds, expect.any(Function));
-    // appendMessage forwards a 4th internalDate arg to client.append (undefined
-    // today, possibly defaulted to a Date later). Assert positionally on the
-    // first three so neither the current undefined nor any future default
-    // breaks this test for non-semantic reasons.
-    expect(mockAppend).toHaveBeenCalledOnce();
-    const [path, body, flags] = mockAppend.mock.calls[0]!;
-    expect(path).toBe("Sent");
-    expect(body).toBe(raw);
-    expect(flags).toEqual(["\\Seen"]);
-  });
-
-  it("swallows APPEND errors and logs warning", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const mockCache = {
-      execute: vi.fn().mockRejectedValue(new Error("IMAP connection lost")),
-    };
-
-    await expect(
-      appendToSentFolder(mockCache as never, "acc1", imapCreds, TEST_RAW, "INBOX.Sent"),
-    ).resolves.toBeUndefined();
-
-    expect(warnSpy).toHaveBeenCalledWith(
-      '[sent] APPEND to "INBOX.Sent" failed for acc1:',
-      "IMAP connection lost",
-    );
-    warnSpy.mockRestore();
   });
 });

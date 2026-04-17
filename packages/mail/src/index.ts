@@ -28,6 +28,11 @@ export type {
   IdleManagerOptions,
   ReconnectedInfo,
 } from "./idle";
+export type {
+  AppendToMailboxInput,
+  AppendToMailboxResult,
+  AppendToSentFolderInput,
+} from "./mailbox-append";
 export type { BackoffConfig, ReconnectionManagerOptions } from "./reconnection";
 export type {
   SmtpCredentials,
@@ -47,6 +52,7 @@ export type { ReferencedMessage } from "./threading";
 export {
   appendMessage,
   expungeMessages,
+  ImapAppendConnectionLostError,
   ImapPrimitiveNonRetriableError,
   moveMessages,
   storeFlags,
@@ -63,7 +69,8 @@ export { discoverMailboxes } from "./discovery";
 export { mailEnv } from "./env";
 export { classifyImapError, classifySmtpError } from "./errors";
 export { IdleManager } from "./idle";
+export { appendToMailbox, appendToSentFolder } from "./mailbox-append";
 export { ReconnectionManager } from "./reconnection";
-export { appendToSentFolder, SmtpTransportCache } from "./smtp";
+export { SmtpTransportCache } from "./smtp";
 export { syncMailboxes } from "./sync";
 export { buildForwardHeaders, buildReplyHeaders } from "./threading";
