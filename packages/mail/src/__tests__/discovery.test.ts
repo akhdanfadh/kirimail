@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { mapMailboxRole } from "../discovery";
+import { mapMailboxRole, shouldAppendToSent } from "../discovery";
 
 describe("mapMailboxRole", () => {
   describe("tier 1: special-use attributes", () => {
@@ -53,5 +53,97 @@ describe("mapMailboxRole", () => {
       expect(mapMailboxRole(null, "Personal", null)).toBe("custom");
       expect(mapMailboxRole(null, "[Gmail]", "/")).toBe("custom");
     });
+  });
+});
+
+describe("shouldAppendToSent", () => {
+  const gmailCaps = new Map<string, boolean | number>([
+    ["IMAP4rev1", true],
+    ["X-GM-EXT-1", true],
+  ]);
+  const plainCaps = new Map<string, boolean | number>([["IMAP4rev1", true]]);
+
+  it("returns false for Gmail (X-GM-EXT-1 + \\All mailbox) - server auto-copies", () => {
+    expect(
+      shouldAppendToSent({
+        imapHost: "imap.gmail.com",
+        capabilities: gmailCaps,
+        hasAllMailbox: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true when X-GM-EXT-1 is present but \\All mailbox is absent", () => {
+    // X-GM-EXT-1 alone is insufficient - Sent auto-copy is tied to the \All
+    // folder existing, not just the capability being advertised.
+    expect(
+      shouldAppendToSent({
+        imapHost: "imap.gmail.com",
+        capabilities: gmailCaps,
+        hasAllMailbox: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true when \\All is present but X-GM-EXT-1 is absent", () => {
+    expect(
+      shouldAppendToSent({
+        imapHost: "imap.example.com",
+        capabilities: plainCaps,
+        hasAllMailbox: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns false for Outlook via office365.com host regardless of capabilities", () => {
+    expect(
+      shouldAppendToSent({
+        imapHost: "outlook.office365.com",
+        capabilities: plainCaps,
+        hasAllMailbox: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("host match is case-insensitive", () => {
+    expect(
+      shouldAppendToSent({
+        imapHost: "outlook.Office365.COM",
+        capabilities: plainCaps,
+        hasAllMailbox: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("requires the host to end with office365.com (rejects suffixed domains)", () => {
+    expect(
+      shouldAppendToSent({
+        imapHost: "office365.com.example.com",
+        capabilities: plainCaps,
+        hasAllMailbox: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("requires a word boundary before office365.com (rejects glued prefixes)", () => {
+    // Without `\b`, `fakeoffice365.com` would match. Guards against vanity
+    // domains that happen to end in the literal substring.
+    expect(
+      shouldAppendToSent({
+        imapHost: "fakeoffice365.com",
+        capabilities: plainCaps,
+        hasAllMailbox: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("returns true for self-hosted IMAP servers (Stalwart, Dovecot, etc.)", () => {
+    expect(
+      shouldAppendToSent({
+        imapHost: "mail.myserver.com",
+        capabilities: plainCaps,
+        hasAllMailbox: false,
+      }),
+    ).toBe(true);
   });
 });

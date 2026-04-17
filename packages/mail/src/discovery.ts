@@ -70,10 +70,40 @@ export function mapMailboxRole(
   return "custom";
 }
 
+/**
+ * True when the send-email handler should APPEND to the Sent folder after
+ * SMTP delivery; false when the provider auto-copies server-side (Gmail,
+ * Outlook), where an explicit APPEND would duplicate.
+ *
+ * Mirrors EmailEngine's `isGmail` / `isOutlook` heuristics.
+ *
+ * @see https://github.com/postalsys/emailengine/blob/master/lib/email-client/imap-client.js - `this.isGmail` / `this.isOutlook`
+ */
+export function shouldAppendToSent(opts: {
+  imapHost: string;
+  /** imapflow's `client.capabilities`. */
+  capabilities: Map<string, boolean | number>;
+  hasAllMailbox: boolean;
+}): boolean {
+  if (opts.capabilities.has("X-GM-EXT-1") && opts.hasAllMailbox) return false;
+  // NOTE: Host-only heuristic - misses on-prem Exchange and vanity domains.
+  // Also false-negatives on delegated accounts (auto-copy lands in the owner's
+  // Sent, not the delegate's, so APPEND is still required); harmless until we
+  // add delegation.
+  if (/\boffice365\.com$/i.test(opts.imapHost)) return false;
+  return true;
+}
+
 /** Result of mailbox discovery for an IMAP account. */
 export interface DiscoveryResult {
   /** Root-level mailboxes; descendants are nested via {@link DiscoveredMailbox.children}. */
   mailboxes: DiscoveredMailbox[];
+  /**
+   * Whether the send-email handler should APPEND to the Sent folder after
+   * SMTP delivery. False for providers that auto-copy server-side (Gmail,
+   * Outlook).
+   */
+  appendToSent: boolean;
 }
 
 /**
@@ -95,9 +125,14 @@ export async function discoverMailboxes(creds: ImapCredentials): Promise<Discove
 
     const nodesByPath = new Map<string, DiscoveredMailbox>();
     const parentPaths = new Map<string, string | null>();
+    let hasAllMailbox = false;
 
     for (const entry of listed) {
-      // \Noselect mailboxes are virtual hierarchy containers (e.g. [Gmail])
+      // Probe \All before the Noselect skip - defensive against servers that
+      // flag the All-mail folder as Noselect; we still want the provider signal.
+      if (entry.specialUse === "\\All") hasAllMailbox = true;
+
+      // NOTE: \Noselect mailboxes are virtual hierarchy containers (e.g. [Gmail])
       // that can't hold messages. Skipping them means their children become
       // roots. Revisit if, e.g., sidebar needs to display provider hierarchy.
       if (entry.flags.has("\\Noselect")) continue;
@@ -141,6 +176,13 @@ export async function discoverMailboxes(creds: ImapCredentials): Promise<Discove
       }
     }
 
-    return { mailboxes: roots };
+    return {
+      mailboxes: roots,
+      appendToSent: shouldAppendToSent({
+        imapHost: creds.host,
+        capabilities: client.capabilities,
+        hasAllMailbox,
+      }),
+    };
   });
 }
