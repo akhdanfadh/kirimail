@@ -1,9 +1,14 @@
 export type {
+  AppendMessageInput,
+  AppendMessageResult,
   ExpungeMessagesInput,
+  ExpungeMessagesResult,
   FlagOperation,
   MoveMessagesInput,
-  MoveResult,
+  MoveMessagesResult,
+  StaleUidValidity,
   StoreFlagsInput,
+  StoreFlagsResult,
 } from "./commands";
 export type { BuildRawMessageOptions, BuildRawMessageResult } from "./compose";
 export type { ImapConnectionCacheOptions, ImapCredentials } from "./connection";
@@ -39,7 +44,13 @@ export type {
 } from "./sync";
 export type { ReferencedMessage } from "./threading";
 
-export { expungeMessages, moveMessages, storeFlags } from "./commands";
+export {
+  appendMessage,
+  expungeMessages,
+  ImapPrimitiveNonRetriableError,
+  moveMessages,
+  storeFlags,
+} from "./commands";
 export { buildRawMessage, stripBcc } from "./compose";
 export { ImapConnectionCache } from "./connection";
 export {

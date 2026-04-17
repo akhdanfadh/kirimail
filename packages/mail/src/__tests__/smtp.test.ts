@@ -624,7 +624,15 @@ describe("appendToSentFolder", () => {
     await appendToSentFolder(mockCache as never, "acc1", imapCreds, raw, "Sent");
 
     expect(mockCache.execute).toHaveBeenCalledWith("acc1", imapCreds, expect.any(Function));
-    expect(mockAppend).toHaveBeenCalledWith("Sent", raw, ["\\Seen"]);
+    // appendMessage forwards a 4th internalDate arg to client.append (undefined
+    // today, possibly defaulted to a Date later). Assert positionally on the
+    // first three so neither the current undefined nor any future default
+    // breaks this test for non-semantic reasons.
+    expect(mockAppend).toHaveBeenCalledOnce();
+    const [path, body, flags] = mockAppend.mock.calls[0]!;
+    expect(path).toBe("Sent");
+    expect(body).toBe(raw);
+    expect(flags).toEqual(["\\Seen"]);
   });
 
   it("swallows APPEND errors and logs warning", async () => {

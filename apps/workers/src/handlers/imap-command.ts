@@ -2,7 +2,13 @@ import type { FlagOperation } from "@kirimail/mail";
 import type { Job, PgBoss } from "pg-boss";
 
 import { db, getEmailAccountById } from "@kirimail/db";
-import { expungeMessages, ImapConnectionCache, moveMessages, storeFlags } from "@kirimail/mail";
+import {
+  expungeMessages,
+  ImapConnectionCache,
+  ImapPrimitiveNonRetriableError,
+  moveMessages,
+  storeFlags,
+} from "@kirimail/mail";
 
 import { resolveImapCredentials } from "../credentials";
 
@@ -11,11 +17,8 @@ import { resolveImapCredentials } from "../credentials";
 // ---------------------------------------------------------------------------
 
 /**
- * imap-command job data.
- *
- * Mirrors StoreFlagsInput / MoveMessagesInput / ExpungeMessagesInput from
- * @kirimail/mail, narrowed for pg-boss JSON serialization and extended with
- * emailAccountId + type discriminator.
+ * imap-command job data: the @kirimail/mail input shapes narrowed for
+ * pg-boss JSON serialization, with `emailAccountId` and a type discriminator.
  */
 type ImapCommandJobData =
   | {
@@ -69,6 +72,20 @@ export async function registerImapCommand(boss: PgBoss): Promise<void> {
       try {
         await executeImapCommand(job.data);
       } catch (error) {
+        // Deterministic failures (bad input, permanent server NO swallowed
+        // by imapflow) won't change on retry - mark the job complete so
+        // pg-boss doesn't burn 3x retry slots on a poisoned job.
+        // NOTE: This is NOT pg-boss dead-lettering - returning here marks
+        // the job successful, so it leaves no DLQ entry and no failure
+        // metric. If a real DLQ is wired up later, throw a typed error
+        // pg-boss can route there instead.
+        if (error instanceof ImapPrimitiveNonRetriableError) {
+          console.error(
+            `[imap-command] ${job.data.type} for account ${emailAccountId} discarded (deterministic failure, non-retriable):`,
+            error.message,
+          );
+          return;
+        }
         console.error(
           `[imap-command] ${job.data.type} for account ${emailAccountId} failed:`,
           error,
@@ -97,10 +114,13 @@ export function closeImapConnections(): void {
 }
 
 /**
- * Resolve credentials, acquire a cached IMAP connection, and dispatch
- * the command. Returns normally on success or when the job should be
- * silently discarded (empty UIDs, deleted account). Throws on transient
- * errors so pg-boss can retry.
+ * Resolve credentials, acquire a cached IMAP connection, and dispatch the
+ * command. Returns early (logged) on the soft `uid-validity-stale` decline -
+ * the sync pipeline reconciles, the next user action enqueues a fresh job.
+ *
+ * Error propagation follows the @kirimail/mail error model (see commands.ts
+ * module header): raw throws bubble to pg-boss for retry; non-retriable
+ * throws are caught and discarded by the outer handler.
  */
 async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
   // No UIDs means nothing to do - skip the DB lookup and connection overhead.
@@ -126,46 +146,48 @@ async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
   await connections.execute(data.emailAccountId, creds, async (client) => {
     switch (data.type) {
       case "store-flags": {
-        const ok = await storeFlags(client, {
+        const result = await storeFlags(client, {
           mailbox: data.mailbox,
           uids: data.uids,
           flags: data.flags,
           operation: data.operation,
           expectedUidValidity: data.uidValidity,
         });
-        if (!ok) {
+        if (!result.ok) {
           console.warn(
-            `[imap-command] store-flags rejected by server for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
+            `[imap-command] store-flags skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
           );
         }
         break;
       }
       case "move": {
         // NOTE: The UID map (source->destination via UIDPLUS) is intentionally
-        // discarded - DB UID reconciliation is the sync pipeline's responsibility.
-        // Chained commands targeting the new UID are resolved at the API layer.
-        const { moved } = await moveMessages(client, {
+        // discarded - DB UID reconciliation is the sync pipeline's responsibility
+        // (see syncMailboxOnConnection in @kirimail/mail). Chained commands
+        // targeting the new UID are resolved at the oRPC procedure layer, which
+        // reads the DB after sync has reconciled.
+        const result = await moveMessages(client, {
           mailbox: data.mailbox,
           destination: data.destination,
           uids: data.uids,
           expectedUidValidity: data.uidValidity,
         });
-        if (!moved) {
+        if (!result.ok) {
           console.warn(
-            `[imap-command] move rejected by server for account ${data.emailAccountId} mailbox "${data.mailbox}" -> "${data.destination}"`,
+            `[imap-command] move skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}" -> "${data.destination}"`,
           );
         }
         break;
       }
       case "expunge": {
-        const ok = await expungeMessages(client, {
+        const result = await expungeMessages(client, {
           mailbox: data.mailbox,
           uids: data.uids,
           expectedUidValidity: data.uidValidity,
         });
-        if (!ok) {
+        if (!result.ok) {
           console.warn(
-            `[imap-command] expunge rejected by server for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
+            `[imap-command] expunge skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
           );
         }
         break;

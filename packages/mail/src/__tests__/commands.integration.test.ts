@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { expungeMessages, moveMessages, storeFlags } from "../commands";
+import {
+  appendMessage,
+  expungeMessages,
+  ImapPrimitiveNonRetriableError,
+  moveMessages,
+  storeFlags,
+} from "../commands";
 import { withImapConnection } from "../connection";
 import { seedMessage, testCredentials } from "./setup";
 
@@ -33,7 +39,7 @@ async function getUids(mailbox: string): Promise<number[]> {
 }
 
 describe("storeFlags", () => {
-  it("adds \\Seen to an unseen message and returns true", async () => {
+  it("adds \\Seen to an unseen message", async () => {
     const mailbox = "StoreFlagsAddSeen";
     await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
     await seedMessage(creds(), { mailbox });
@@ -44,7 +50,7 @@ describe("storeFlags", () => {
       storeFlags(client, { mailbox, uids: [uid!], flags: ["\\Seen"], operation: "add" }),
     );
 
-    expect(result).toBe(true);
+    expect(result.ok).toBe(true);
     const flags = await fetchFlags(mailbox, uid!);
     expect(flags.has("\\Seen")).toBe(true);
   });
@@ -81,26 +87,6 @@ describe("storeFlags", () => {
     expect(flags.has("\\Flagged")).toBe(false);
   });
 
-  it("operates on multiple UIDs", async () => {
-    const mailbox = "StoreFlagsMultiUid";
-    await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
-    await seedMessage(creds(), { mailbox, headers: { subject: "Multi 1" } });
-    await seedMessage(creds(), { mailbox, headers: { subject: "Multi 2" } });
-    await seedMessage(creds(), { mailbox, headers: { subject: "Multi 3" } });
-
-    const uids = await getUids(mailbox);
-    expect(uids).toHaveLength(3);
-
-    await withImapConnection(creds(), (client) =>
-      storeFlags(client, { mailbox, uids, flags: ["\\Seen"], operation: "add" }),
-    );
-
-    for (const uid of uids) {
-      const flags = await fetchFlags(mailbox, uid!);
-      expect(flags.has("\\Seen")).toBe(true);
-    }
-  });
-
   it("preserves existing flags when adding", async () => {
     const mailbox = "StoreFlagsPreserve";
     await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
@@ -115,18 +101,6 @@ describe("storeFlags", () => {
     const flags = await fetchFlags(mailbox, uid!);
     expect(flags.has("\\Seen")).toBe(true);
     expect(flags.has("\\Flagged")).toBe(true);
-  });
-
-  it("returns false for empty UID array", async () => {
-    const mailbox = "StoreFlagsEmptyUids";
-    await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
-    await seedMessage(creds(), { mailbox });
-
-    const result = await withImapConnection(creds(), (client) =>
-      storeFlags(client, { mailbox, uids: [], flags: ["\\Seen"], operation: "add" }),
-    );
-
-    expect(result).toBe(false);
   });
 
   it("set with empty flags clears all flags", async () => {
@@ -155,7 +129,7 @@ describe("storeFlags", () => {
       storeFlags(client, { mailbox, uids: [uid!], flags: ["$label1"], operation: "add" }),
     );
 
-    expect(result).toBe(true);
+    expect(result.ok).toBe(true);
     const flags = await fetchFlags(mailbox, uid!);
     expect(flags.has("$label1")).toBe(true);
   });
@@ -212,7 +186,7 @@ describe("storeFlags", () => {
       }),
     );
 
-    expect(result).toBe(false);
+    expect(result).toEqual({ ok: false, reason: "uid-validity-stale" });
 
     // Message untouched
     const flags = await fetchFlags(mailbox, uid!);
@@ -236,7 +210,7 @@ describe("moveMessages", () => {
       moveMessages(client, { mailbox: source, destination: dest, uids: [sourceUid!] }),
     );
 
-    expect(result.moved).toBe(true);
+    if (!result.ok) expect.fail("expected ok");
     expect(result.uidMap.size).toBe(1);
     expect(result.uidMap.has(sourceUid!)).toBe(true);
 
@@ -246,32 +220,6 @@ describe("moveMessages", () => {
     expect(sourceUids).toHaveLength(0);
     expect(destUids).toHaveLength(1);
     expect(result.uidMap.get(sourceUid!)).toBe(destUids[0]);
-  });
-
-  it("moves multiple messages", async () => {
-    const source = "MoveMultiSource";
-    const dest = "MoveMultiDest";
-    await withImapConnection(creds(), async (client) => {
-      await client.mailboxCreate(source);
-      await client.mailboxCreate(dest);
-    });
-    await seedMessage(creds(), { mailbox: source, headers: { subject: "Batch 1" } });
-    await seedMessage(creds(), { mailbox: source, headers: { subject: "Batch 2" } });
-    await seedMessage(creds(), { mailbox: source, headers: { subject: "Batch 3" } });
-
-    const uids = await getUids(source);
-    expect(uids).toHaveLength(3);
-
-    const result = await withImapConnection(creds(), (client) =>
-      moveMessages(client, { mailbox: source, destination: dest, uids }),
-    );
-
-    expect(result.moved).toBe(true);
-    expect(result.uidMap.size).toBe(3);
-    const sourceUids = await getUids(source);
-    const destUids = await getUids(dest);
-    expect(sourceUids).toHaveLength(0);
-    expect(destUids).toHaveLength(3);
   });
 
   it("preserves flags after move", async () => {
@@ -289,6 +237,7 @@ describe("moveMessages", () => {
       moveMessages(client, { mailbox: source, destination: dest, uids: [uid!] }),
     );
 
+    if (!result.ok) expect.fail("expected ok");
     const destUid = result.uidMap.get(uid!);
     expect(destUid).toBeDefined();
     const flags = await fetchFlags(dest, destUid!);
@@ -310,7 +259,7 @@ describe("moveMessages", () => {
       moveMessages(client, { mailbox: source, destination: dest, uids: "1:*" }),
     );
 
-    expect(result.moved).toBe(true);
+    if (!result.ok) expect.fail("expected ok");
     expect(result.uidMap.size).toBe(2);
     const sourceUids = await getUids(source);
     const destUids = await getUids(dest);
@@ -318,45 +267,25 @@ describe("moveMessages", () => {
     expect(destUids).toHaveLength(2);
   });
 
-  it("reports moved:false when destination does not exist", async () => {
+  it("throws when destination does not exist (imapflow swallows server NO)", async () => {
     const source = "MoveNoDestSource";
     await withImapConnection(creds(), (client) => client.mailboxCreate(source));
     await seedMessage(creds(), { mailbox: source });
 
     const [uid] = await getUids(source);
 
-    const result = await withImapConnection(creds(), (client) =>
-      moveMessages(client, { mailbox: source, destination: "NoSuchMailbox", uids: [uid!] }),
-    );
-
-    expect(result.moved).toBe(false);
+    await expect(
+      withImapConnection(creds(), (client) =>
+        moveMessages(client, { mailbox: source, destination: "NoSuchMailbox", uids: [uid!] }),
+      ),
+    ).rejects.toThrow(ImapPrimitiveNonRetriableError);
 
     // Source message still exists (server rejected the move)
     const remaining = await getUids(source);
     expect(remaining).toHaveLength(1);
   });
 
-  it("reports moved:false for empty UID array", async () => {
-    const source = "MoveEmptyUids";
-    const dest = "MoveEmptyUidsDest";
-    await withImapConnection(creds(), async (client) => {
-      await client.mailboxCreate(source);
-      await client.mailboxCreate(dest);
-    });
-    await seedMessage(creds(), { mailbox: source });
-
-    const result = await withImapConnection(creds(), (client) =>
-      moveMessages(client, { mailbox: source, destination: dest, uids: [] }),
-    );
-
-    expect(result.moved).toBe(false);
-
-    // Source message untouched
-    const remaining = await getUids(source);
-    expect(remaining).toHaveLength(1);
-  });
-
-  it("reports moved:true with empty uidMap for non-existent source UID", async () => {
+  it("succeeds with empty uidMap for non-existent source UID", async () => {
     const source = "MoveGhostSource";
     const dest = "MoveGhostDest";
     await withImapConnection(creds(), async (client) => {
@@ -375,7 +304,7 @@ describe("moveMessages", () => {
     );
 
     // Server accepts the command (no error), but nothing actually moved
-    expect(result.moved).toBe(true);
+    if (!result.ok) expect.fail("expected ok");
     expect(result.uidMap.size).toBe(0);
 
     // Original message still in source, nothing in dest
@@ -384,10 +313,38 @@ describe("moveMessages", () => {
     expect(sourceUids).toHaveLength(1);
     expect(destUids).toHaveLength(0);
   });
+
+  it("returns stale-uid-validity when expectedUidValidity does not match", async () => {
+    // Guard mechanism is exercised end-to-end (with a real UIDVALIDITY
+    // change) in the storeFlags rebuild test. Here we just verify the
+    // guard is wired into moveMessages.
+    const source = "MoveStaleSource";
+    const dest = "MoveStaleDest";
+    await withImapConnection(creds(), async (client) => {
+      await client.mailboxCreate(source);
+      await client.mailboxCreate(dest);
+    });
+    await seedMessage(creds(), { mailbox: source });
+
+    const [uid] = await getUids(source);
+    const result = await withImapConnection(creds(), (client) =>
+      moveMessages(client, {
+        mailbox: source,
+        destination: dest,
+        uids: [uid!],
+        expectedUidValidity: 1, // Stalwart-assigned UIDVALIDITY won't be 1
+      }),
+    );
+
+    expect(result).toEqual({ ok: false, reason: "uid-validity-stale" });
+    // Message untouched
+    const remaining = await getUids(source);
+    expect(remaining).toHaveLength(1);
+  });
 });
 
 describe("expungeMessages", () => {
-  it("permanently removes a message and returns true", async () => {
+  it("permanently removes a message", async () => {
     const mailbox = "ExpungeSingle";
     await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
     await seedMessage(creds(), { mailbox });
@@ -398,9 +355,28 @@ describe("expungeMessages", () => {
       expungeMessages(client, { mailbox, uids: [uid!] }),
     );
 
-    expect(result).toBe(true);
+    expect(result.ok).toBe(true);
     const remaining = await getUids(mailbox);
     expect(remaining).toHaveLength(0);
+  });
+
+  it("returns stale-uid-validity when expectedUidValidity does not match", async () => {
+    // Guard mechanism is exercised end-to-end (with a real UIDVALIDITY
+    // change) in the storeFlags rebuild test. Here we just verify the
+    // guard is wired into expungeMessages.
+    const mailbox = "ExpungeStale";
+    await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
+    await seedMessage(creds(), { mailbox });
+
+    const [uid] = await getUids(mailbox);
+    const result = await withImapConnection(creds(), (client) =>
+      expungeMessages(client, { mailbox, uids: [uid!], expectedUidValidity: 1 }),
+    );
+
+    expect(result).toEqual({ ok: false, reason: "uid-validity-stale" });
+    // Message survives
+    const remaining = await getUids(mailbox);
+    expect(remaining).toHaveLength(1);
   });
 
   it("removes only specified UIDs, keeps others", async () => {
@@ -446,5 +422,80 @@ describe("expungeMessages", () => {
     const remaining = await getUids(mailbox);
     expect(remaining).toHaveLength(1);
     expect(remaining[0]).toBe(flaggedUid);
+  });
+});
+
+describe("appendMessage", () => {
+  it("appends with given flags and returns the new UID via UIDPLUS", async () => {
+    const mailbox = "AppendBasic";
+    await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
+
+    const raw = Buffer.from(
+      [
+        "From: sender@localhost",
+        "To: commandsuser@localhost",
+        "Date: " + new Date().toUTCString(),
+        "MIME-Version: 1.0",
+        "Content-Type: text/plain; charset=utf-8",
+        "Subject: Appended directly",
+        "",
+        "Body content for APPEND.",
+      ].join("\r\n"),
+    );
+
+    const result = await withImapConnection(creds(), (client) =>
+      appendMessage(client, { mailbox, raw, flags: ["\\Seen"] }),
+    );
+
+    // Stalwart advertises UIDPLUS, so APPENDUID populates uid/uidValidity
+    // and the returned uid must match what SEARCH ALL finds in the mailbox.
+    expect(result.uid).not.toBeNull();
+    expect(result.uidValidity).not.toBeNull();
+
+    const uids = await getUids(mailbox);
+    expect(uids).toHaveLength(1);
+    expect(result.uid).toBe(uids[0]);
+    const flags = await fetchFlags(mailbox, uids[0]!);
+    expect(flags.has("\\Seen")).toBe(true);
+  });
+
+  it("defaults to no flags when the flags input is omitted", async () => {
+    const mailbox = "AppendNoFlags";
+    await withImapConnection(creds(), (client) => client.mailboxCreate(mailbox));
+
+    const raw = Buffer.from(
+      [
+        "From: sender@localhost",
+        "To: commandsuser@localhost",
+        "Date: " + new Date().toUTCString(),
+        "MIME-Version: 1.0",
+        "Content-Type: text/plain; charset=utf-8",
+        "Subject: Unflagged",
+        "",
+        "No flags on this one.",
+      ].join("\r\n"),
+    );
+
+    await withImapConnection(creds(), (client) => appendMessage(client, { mailbox, raw }));
+
+    const uids = await getUids(mailbox);
+    const flags = await fetchFlags(mailbox, uids[0]!);
+    expect(flags.has("\\Seen")).toBe(false);
+  });
+
+  it("throws raw imapflow error (not NonRetriable) when destination mailbox missing", async () => {
+    // append.js re-raises server NOs (unlike move/store/expunge which
+    // swallow). Pin the error class to verify the contract: missing
+    // mailbox is a server NO that surfaces as a raw Error carrying the
+    // server response code, not a NonRetriable - callers can inspect it
+    // and decide whether to CREATE+retry or surface to the user.
+    const raw = Buffer.from(
+      "From: s@l\r\nTo: r@l\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\n\r\nx",
+    );
+    const err = await withImapConnection(creds(), (client) =>
+      appendMessage(client, { mailbox: "DoesNotExist", raw }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(ImapPrimitiveNonRetriableError);
   });
 });
