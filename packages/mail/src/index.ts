@@ -14,12 +14,7 @@ export type { BuildRawMessageOptions, BuildRawMessageResult } from "./compose";
 export type { ImapConnectionCacheOptions, ImapCredentials } from "./connection";
 export type { CredentialEnvelope } from "./crypto";
 export type { DiscoveryResult } from "./discovery";
-export type {
-  ClassifiedImapError,
-  ImapErrorCategory,
-  ClassifiedSmtpError,
-  SmtpErrorCategory,
-} from "./errors";
+export type { ClassifyImapErrorResult, ClassifySmtpErrorResult } from "./errors";
 export type {
   ExistsInfo,
   ExpungeInfo,

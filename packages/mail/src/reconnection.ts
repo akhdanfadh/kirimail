@@ -1,6 +1,6 @@
 import type { ImapFlow } from "imapflow";
 
-import type { ClassifiedImapError } from "./errors";
+import type { ClassifyImapErrorResult } from "./errors";
 
 import { classifyImapError } from "./errors";
 
@@ -61,14 +61,14 @@ export interface ReconnectionManagerOptions {
    */
   onReconnected: (client: ImapFlow) => Promise<void>;
   /** Called immediately on every auth failure (surface to UI). */
-  onAuthFailure?: (error: ClassifiedImapError) => void;
+  onAuthFailure?: (error: ClassifyImapErrorResult) => void;
   /**
    * Called when auth failures persist beyond {@link authDisableThresholdMs}.
    * The caller should disable sync and surface a re-authentication prompt.
    */
-  onAuthDisabled?: (error: ClassifiedImapError) => void;
+  onAuthDisabled?: (error: ClassifyImapErrorResult) => void;
   /** Called on non-retryable protocol errors. No reconnection is attempted. */
-  onProtocolError?: (error: ClassifiedImapError) => void;
+  onProtocolError?: (error: ClassifyImapErrorResult) => void;
   /**
    * Called once when transient failures persist beyond
    * {@link prolongedOutageThresholdMs}. The caller should update the
@@ -80,7 +80,7 @@ export interface ReconnectionManagerOptions {
    * (e.g., "connected" | "reconnecting" | "degraded" | "auth-failed" |
    * "disabled") that the UI reads to render connection status.
    */
-  onProlongedOutage?: (error: ClassifiedImapError) => void;
+  onProlongedOutage?: (error: ClassifyImapErrorResult) => void;
   /** Override default backoff parameters. */
   backoff?: Partial<BackoffConfig>;
   /** Multiplier applied to baseDelayMs for rate-limit errors. Default: 5. */
@@ -140,10 +140,10 @@ const DEFAULT_PROLONGED_OUTAGE_MAX_DELAY_MS = 5 * 60 * 1000; // 5 min
 export class ReconnectionManager {
   private readonly connect: () => Promise<ImapFlow>;
   private readonly onReconnected: (client: ImapFlow) => Promise<void>;
-  private readonly onAuthFailure: ((error: ClassifiedImapError) => void) | undefined;
-  private readonly onAuthDisabled: ((error: ClassifiedImapError) => void) | undefined;
-  private readonly onProtocolError: ((error: ClassifiedImapError) => void) | undefined;
-  private readonly onProlongedOutage: ((error: ClassifiedImapError) => void) | undefined;
+  private readonly onAuthFailure: ((error: ClassifyImapErrorResult) => void) | undefined;
+  private readonly onAuthDisabled: ((error: ClassifyImapErrorResult) => void) | undefined;
+  private readonly onProtocolError: ((error: ClassifyImapErrorResult) => void) | undefined;
+  private readonly onProlongedOutage: ((error: ClassifyImapErrorResult) => void) | undefined;
   private readonly backoffConfig: BackoffConfig;
   private readonly rateLimitBaseMultiplier: number;
   private readonly rateLimitMaxDelayMs: number;
@@ -320,7 +320,7 @@ export class ReconnectionManager {
    * a timer that fires {@link attemptReconnect}. Increments {@link attempts}
    * so the next call backs off further.
    */
-  private scheduleReconnect(classified: ClassifiedImapError): void {
+  private scheduleReconnect(classified: ClassifyImapErrorResult): void {
     let config: BackoffConfig;
 
     if (classified.category === "rate-limit") {

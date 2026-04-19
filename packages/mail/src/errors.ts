@@ -1,21 +1,8 @@
+import type { ImapErrorCategory, SmtpErrorCategory } from "@kirimail/shared";
+
 // ---------------------------------------------------------------------------
 // IMAP error classification
 // ---------------------------------------------------------------------------
-
-/** Category of an IMAP error, determining retry strategy. */
-export type ImapErrorCategory =
-  | "auth" // bad credentials
-  | "transient" // network hiccup, worth retrying
-  | "rate-limit" // provider throttling
-  | "protocol"; // non-retryable server error, catch-all
-
-/** Result of classifying an IMAP error. */
-export interface ClassifiedImapError {
-  category: ImapErrorCategory;
-  message: string;
-  /** Node.js or IMAP error code when available (e.g., "ETIMEDOUT"). */
-  code?: string;
-}
 
 /**
  * Error codes that indicate a transient failure worth retrying.
@@ -49,17 +36,25 @@ const IMAP_TRANSIENT_CODES = new Set([
   "ClosedAfterConnectText", // unexpected close after plaintext connect
 ]);
 
+/** Result of {@link classifyImapError}. */
+export interface ClassifyImapErrorResult {
+  category: ImapErrorCategory;
+  message: string;
+  /** Node.js or IMAP error code when available (e.g., "ETIMEDOUT"). */
+  code?: string;
+}
+
 /**
  * Classify an IMAP error into a retry category. Mainly adjusted for imapflow.
  *
  * Accepts any value (including `null` for a clean close) and returns a
- * {@link ClassifiedImapError} indicating whether the caller should retry,
+ * {@link ClassifyImapErrorResult} indicating whether the caller should retry,
  * surface an auth problem, back off for rate-limiting, or give up.
  *
  * @see https://github.com/postalsys/imapflow/blob/master/lib/tools.js - AuthenticationFailure class
  * @see https://github.com/postalsys/emailengine/blob/master/lib/email-client/base-client.js - isTransientError
  */
-export function classifyImapError(err: unknown): ClassifiedImapError {
+export function classifyImapError(err: unknown): ClassifyImapErrorResult {
   if (err == null) {
     // imapflow's close event always fires with no argument - errors arrive
     // via a separate 'error' event. A null err means the connection closed
@@ -114,24 +109,6 @@ export function classifyImapError(err: unknown): ClassifiedImapError {
 // SMTP error classification
 // ---------------------------------------------------------------------------
 
-/** Category of an SMTP error, determining retry strategy. */
-export type SmtpErrorCategory =
-  | "auth" // bad credentials (EAUTH, ENOAUTH, EOAUTH2, 535)
-  | "transient" // network hiccup, worth retrying
-  | "rate-limit" // provider throttling (421)
-  | "recipient" // invalid address (EENVELOPE, 550, 553)
-  | "protocol"; // non-retryable server error (ETLS, EPROTOCOL, other 5xx)
-
-/** Result of classifying an SMTP error. */
-export interface ClassifiedSmtpError {
-  category: SmtpErrorCategory;
-  message: string;
-  /** Nodemailer string code when available (e.g., "EAUTH", "ETIMEDOUT"). */
-  code?: string;
-  /** SMTP numeric response code when available (e.g., 550, 421). */
-  responseCode?: number;
-}
-
 /** Nodemailer error codes that indicate an authentication failure. */
 const SMTP_AUTH_CODES = new Set([
   "EAUTH", // authentication failed
@@ -178,6 +155,16 @@ const SMTP_PROTOCOL_CODES = new Set([
   "ECONFIG", // invalid configuration - won't self-heal
 ]);
 
+/** Result of {@link classifySmtpError}. */
+export interface ClassifySmtpErrorResult {
+  category: SmtpErrorCategory;
+  message: string;
+  /** Nodemailer string code when available (e.g., "EAUTH", "ETIMEDOUT"). */
+  code?: string;
+  /** SMTP numeric response code when available (e.g., 550, 421). */
+  responseCode?: number;
+}
+
 /**
  * Classify an SMTP error into a retry category. Adjusted for nodemailer.
  *
@@ -189,7 +176,7 @@ const SMTP_PROTOCOL_CODES = new Set([
  * @see https://en.wikipedia.org/wiki/List_of_SMTP_server_return_codes - SMTP reply code reference
  * @see https://github.com/postalsys/emailengine/blob/master/workers/submit.js - retry strategy reference
  */
-export function classifySmtpError(err: unknown): ClassifiedSmtpError {
+export function classifySmtpError(err: unknown): ClassifySmtpErrorResult {
   if (err == null) {
     return { category: "transient", message: "unknown SMTP error (null)" };
   }
