@@ -193,8 +193,8 @@ export const smtpIdentities = pgTable(
       table.fromAddress,
     ),
     // Trivially unique (id is already PK), declared so composite foreign
-    // keys on (email_account_id, id) — e.g., outbound_messages's ownership
-    // check — have a targetable parent reference.
+    // keys on (email_account_id, id) - e.g., outbound_messages's ownership
+    // check - have a targetable parent reference.
     unique("smtp_identities_email_account_id_id_uniq").on(table.emailAccountId, table.id),
   ],
 );
@@ -220,12 +220,12 @@ export const outboundMessages = pgTable(
       .references(() => emailAccounts.id, { onDelete: "cascade" }),
     // The referencing FK is declared below as a composite key over
     // (emailAccountId, smtpIdentityId) so the DB enforces that the
-    // identity belongs to the email account on the same row — otherwise
+    // identity belongs to the email account on the same row - otherwise
     // a buggy API could let user A send through user B's identity.
     smtpIdentityId: text("smtp_identity_id").notNull(),
 
     /**
-     * Raw RFC 5322 bytes, BCC headers included. NOT NULL — a row exists
+     * Raw RFC 5322 bytes, BCC headers included. NOT NULL - a row exists
      * only to carry these bytes, and no consumer can act on an empty one
      * (the non-empty CHECK also catches the degenerate zero-length case).
      */
@@ -238,8 +238,9 @@ export const outboundMessages = pgTable(
 
     status: text("status").$type<OutboundMessageStatus>().notNull().default("pending"),
     /**
-     * SMTP dispatch attempt counter at the domain layer.
-     * Distinct from pg-boss's internal job retry counters.
+     * SMTP dispatch attempt counter at the domain layer. Bumps on `pending -> sending`
+     * and `failed -> sending` transitions only; mailbox-append retries do NOT contribute.
+     * Distinct from worker's internal job retry counters.
      */
     attempts: integer("attempts").notNull().default(0),
     /** Classified category paired with `lastError`. Non-null iff `lastError` is non-null. */
@@ -260,7 +261,7 @@ export const outboundMessages = pgTable(
       table.messageId,
     ),
     // Composite FK: enforces that the identity belongs to the email account
-    // on the same row — column-level FKs alone only validate each target
+    // on the same row - column-level FKs alone only validate each target
     // exists, not that the two are related.
     //
     // Restrict: protects in-flight sends (pending/sending) from losing
@@ -278,14 +279,20 @@ export const outboundMessages = pgTable(
       columns: [table.emailAccountId, table.smtpIdentityId],
       foreignColumns: [smtpIdentities.emailAccountId, smtpIdentities.id],
     }).onDelete("restrict"),
-    // rawMime must never be an empty buffer — a zero-length MIME payload
+    // rawMime must never be an empty buffer - a zero-length MIME payload
     // would indicate a caller bug and nothing would accept it downstream.
     check("outbound_messages_raw_mime_non_empty_chk", sql`octet_length(${table.rawMime}) > 0`),
     // lastError and lastErrorCategory must either both be null or both be
-    // non-null — the category has no meaning without its message and vice versa.
+    // non-null - the category has no meaning without its message and vice versa.
     check(
       "outbound_messages_last_error_pair_chk",
       sql`(${table.lastError} IS NULL) = (${table.lastErrorCategory} IS NULL)`,
+    ),
+    // sentAt is stamped iff status = 'sent'. The state machine already enforces
+    // this at write time; the CHECK is defense-in-depth against future direct mutations.
+    check(
+      "outbound_messages_sent_at_matches_status_chk",
+      sql`(${table.sentAt} IS NULL) = (${table.status} <> 'sent')`,
     ),
   ],
 );

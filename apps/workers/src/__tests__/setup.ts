@@ -65,6 +65,12 @@ class = "individual"
 name = "idleuser"
 secret = "testpass"
 email.0000 = "idleuser@localhost"
+
+[directory."memory".principals.0004]
+class = "individual"
+name = "appendsentuser"
+secret = "testpass"
+email.0000 = "appendsentuser@localhost"
 `.trimStart();
 
 // ---------------------------------------------------------------------------

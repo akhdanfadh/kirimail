@@ -1,10 +1,12 @@
 import { pool } from "@kirimail/db";
 import { PgBoss } from "pg-boss";
 
+import { closeCachedConnections } from "./caches";
 import { workerEnv } from "./env";
 import {
-  closeImapConnections,
+  registerAppendSent,
   registerImapCommand,
+  registerOutboundReaper,
   registerSyncEmailAccount,
   registerSyncScheduler,
 } from "./handlers";
@@ -45,6 +47,8 @@ export async function startWorkers(): Promise<WorkerHandle> {
     await registerSyncEmailAccount(boss);
     await registerSyncScheduler(boss, workerEnv.SYNC_CRON_SCHEDULE);
     await registerImapCommand(boss);
+    await registerAppendSent(boss);
+    await registerOutboundReaper(boss);
 
     idlePool = new IdlePool(boss);
     await idlePool.startAll();
@@ -54,7 +58,7 @@ export async function startWorkers(): Promise<WorkerHandle> {
       .stop({ graceful: true, timeout: 5_000 })
       .catch((e) => console.error("[workers] pg-boss cleanup:", e));
     try {
-      closeImapConnections();
+      closeCachedConnections();
     } catch (e) {
       console.error("[workers] imap-close cleanup:", e);
     }
@@ -73,7 +77,7 @@ export async function startWorkers(): Promise<WorkerHandle> {
           .stop({ graceful: true, timeout: 15_000 })
           .catch((e) => console.error("[workers] pg-boss:", e));
         try {
-          closeImapConnections();
+          closeCachedConnections();
         } catch (e) {
           console.error("[workers] imap-close:", e);
         }

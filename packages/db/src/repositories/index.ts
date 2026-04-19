@@ -9,6 +9,7 @@ export {
   markOutboundMessageFailed,
   markPendingOutboundMessageSending,
   markSendingOutboundMessageSent,
+  reapStaleSentOutboundMessages,
   resetSendingOutboundMessageToPending,
   retryFailedOutboundMessage,
 } from "./outbound-messages";

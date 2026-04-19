@@ -26,12 +26,14 @@
  *   NOTE: This temporal invariant isn't expressible at the DB layer. Sustained `sent`
  *   rows (detectable via `sent_at` age) indicate the append worker silently exhausted
  *   retries; operational cleanup via a cron reaper is the right mitigation.
+ * - NOTE: `sending` has a symmetric stuck-row risk (send-email crashes mid-SMTP, worker
+ *   evicts the job without resetting status). Another reaper job could be added.
  */
 
 import type { RetryableSmtpErrorCategory, SmtpErrorCategory } from "@kirimail/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
-import { and, eq, getColumns, inArray, sql } from "drizzle-orm";
+import { and, eq, getColumns, inArray, lt, sql } from "drizzle-orm";
 
 import type * as schema from "../schema";
 
@@ -141,6 +143,24 @@ export async function deleteOutboundMessage(db: Db, id: string) {
     .where(eq(outboundMessages.id, id))
     .returning({ id: outboundMessages.id });
   return row;
+}
+
+/**
+ * Bulk-delete `sent` rows whose `sentAt` predates `olderThan`.
+ *
+ * Only touches `status = 'sent'`: `failed` rows are terminal-for-humans
+ * awaiting user-initiated retry and must never be swept here.
+ */
+export async function reapStaleSentOutboundMessages(db: Db, olderThan: Date) {
+  return db
+    .delete(outboundMessages)
+    .where(and(eq(outboundMessages.status, "sent"), lt(outboundMessages.sentAt, olderThan)))
+    .returning({
+      id: outboundMessages.id,
+      emailAccountId: outboundMessages.emailAccountId,
+      messageId: outboundMessages.messageId,
+      sentAt: outboundMessages.sentAt,
+    });
 }
 
 /**

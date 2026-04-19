@@ -21,6 +21,7 @@ import {
   markOutboundMessageFailed,
   markPendingOutboundMessageSending,
   markSendingOutboundMessageSent,
+  reapStaleSentOutboundMessages,
   resetSendingOutboundMessageToPending,
   retryFailedOutboundMessage,
 } from "../outbound-messages";
@@ -468,5 +469,79 @@ describe("outboundMessages repository", () => {
     await expect(
       insertOutboundMessage(db, buildInput({ smtpIdentityId: otherIdentityId })),
     ).rejects.toThrow();
+  });
+
+  it("enforces the (status='sent') ⟺ (sentAt IS NOT NULL) invariant at the DB", async () => {
+    // `outbound_messages_sent_at_matches_status_chk` is what lets the reaper's
+    // predicate (`sentAt < X`) be correct without a redundant status filter:
+    // no non-sent row can carry a non-null sentAt, so an old sentAt is
+    // sufficient identification of an abandoned sent row. If this CHECK were
+    // ever dropped, the reaper could silently start sweeping pending/sending/
+    // failed rows — protect the declaration with an explicit test.
+    const inserted = await insertOutboundMessage(db, buildInput());
+
+    // pending row with sentAt stamped — forbidden.
+    await expect(
+      db
+        .update(outboundMessages)
+        .set({ sentAt: new Date() })
+        .where(eq(outboundMessages.id, inserted!.id)),
+    ).rejects.toMatchObject({
+      cause: { code: "23514", constraint: "outbound_messages_sent_at_matches_status_chk" },
+    });
+
+    // sent row with sentAt nulled — also forbidden.
+    await markPendingOutboundMessageSending(db, inserted!.id);
+    await markSendingOutboundMessageSent(db, inserted!.id);
+    await expect(
+      db
+        .update(outboundMessages)
+        .set({ sentAt: null })
+        .where(eq(outboundMessages.id, inserted!.id)),
+    ).rejects.toMatchObject({
+      cause: { code: "23514", constraint: "outbound_messages_sent_at_matches_status_chk" },
+    });
+  });
+
+  describe("reapStaleSentOutboundMessages", () => {
+    // `outbound_messages_sent_at_matches_status_chk` guarantees only sent rows
+    // have non-null sentAt, so setting (status='sent', sentAt=<date>) via raw
+    // update is the only configuration we need to cover — non-sent rows with
+    // stale sentAt cannot exist in this schema and so are not worth testing.
+    async function backdateSentRow(id: string, sentAt: Date) {
+      await db
+        .update(outboundMessages)
+        .set({ status: "sent", sentAt })
+        .where(eq(outboundMessages.id, id));
+    }
+
+    it("reaps sent rows with sentAt older than the cutoff and spares fresh sent rows", async () => {
+      const stale = await insertOutboundMessage(db, buildInput({ messageId: "<stale@k.local>" }));
+      const fresh = await insertOutboundMessage(db, buildInput({ messageId: "<fresh@k.local>" }));
+      const cutoff = new Date("2025-01-01T00:00:00Z");
+      await backdateSentRow(stale!.id, new Date("2024-12-31T23:00:00Z"));
+      await backdateSentRow(fresh!.id, new Date("2025-01-01T01:00:00Z"));
+
+      const reaped = await reapStaleSentOutboundMessages(db, cutoff);
+
+      expect(reaped.map((r) => r.id)).toEqual([stale!.id]);
+      expect(await getOutboundMessageById(db, stale!.id)).toBeUndefined();
+      expect(await getOutboundMessageById(db, fresh!.id)).toBeDefined();
+    });
+
+    it("treats the cutoff as strict less-than (sentAt === cutoff is spared)", async () => {
+      // Pins the strict-`<` boundary so a future refactor to `<=` (or the
+      // reverse) can't silently change reap semantics. One minute's worth of
+      // rows sitting exactly at the cutoff getting swept prematurely is the
+      // kind of off-by-one you only notice in production.
+      const cutoff = new Date("2025-01-01T00:00:00Z");
+      const row = await insertOutboundMessage(db, buildInput());
+      await backdateSentRow(row!.id, cutoff);
+
+      const reaped = await reapStaleSentOutboundMessages(db, cutoff);
+
+      expect(reaped).toEqual([]);
+      expect(await getOutboundMessageById(db, row!.id)).toBeDefined();
+    });
   });
 });

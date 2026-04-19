@@ -74,6 +74,62 @@ export async function createEncryptedEmailAccount(
   return id;
 }
 
+/**
+ * Insert a minimal SMTP identity row. Credentials are a valid-shape dummy
+ * envelope so the NOT NULL column is satisfied; tests that only drive the
+ * append-sent path never decrypt them.
+ */
+export async function createSmtpIdentityStub(
+  db: Db,
+  emailAccountId: string,
+  overrides?: { fromAddress?: string },
+) {
+  const id = randomUUID();
+  const key = Buffer.from(inject("encryptionKey"), "hex");
+  const envelope = encryptCredential("unused", key, 1);
+
+  await db.insert(schema.smtpIdentities).values({
+    id,
+    emailAccountId,
+    fromAddress: overrides?.fromAddress ?? `${randomUUID()}@localhost`,
+    smtpHost: "localhost",
+    smtpPort: 587,
+    smtpSecurity: "none",
+    encryptedPassword: serializeEnvelope(envelope),
+    keyVersion: 1,
+  });
+  return id;
+}
+
+/**
+ * Ensure a Sent mailbox exists both on the IMAP server and in the DB, so
+ * `findMailboxPathByRole` resolves and `appendToSentFolder` can APPEND
+ * without NO-response failures.
+ */
+export async function seedSentMailbox(
+  db: Db,
+  emailAccountId: string,
+  creds: ImapCredentials,
+  path = "Sent",
+) {
+  await withImapConnection(creds, async (client) => {
+    const list = await client.list();
+    if (!list.some((m) => m.path === path)) {
+      await client.mailboxCreate(path);
+    }
+  });
+
+  const id = randomUUID();
+  await db.insert(schema.mailboxes).values({
+    id,
+    emailAccountId,
+    path,
+    role: "sent",
+    specialUse: "\\Sent",
+  });
+  return id;
+}
+
 // ---------------------------------------------------------------------------
 // IMAP cleanup
 // ---------------------------------------------------------------------------

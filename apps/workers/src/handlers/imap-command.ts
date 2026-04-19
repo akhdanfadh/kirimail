@@ -4,12 +4,12 @@ import type { Job, PgBoss } from "pg-boss";
 import { db, getEmailAccountById } from "@kirimail/db";
 import {
   expungeMessages,
-  ImapConnectionCache,
   ImapPrimitiveNonRetriableError,
   moveMessages,
   storeFlags,
 } from "@kirimail/mail";
 
+import { imapCache } from "../caches";
 import { resolveImapCredentials } from "../credentials";
 
 // ---------------------------------------------------------------------------
@@ -101,19 +101,6 @@ export async function registerImapCommand(boss: PgBoss): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Connection cache (module-level, lives for the worker process lifetime).
- *
- * Eviction timers use unref() so they don't block process exit, but
- * connections are socket-destroyed rather than cleanly logged out.
- */
-const connections = new ImapConnectionCache();
-
-/** Close all cached IMAP connections. Call during graceful shutdown. */
-export function closeImapConnections(): void {
-  connections.closeAll();
-}
-
-/**
  * Resolve credentials, acquire a cached IMAP connection, and dispatch the
  * command. Returns early (logged) on the soft `uid-validity-stale` decline -
  * the sync pipeline reconciles, the next user action enqueues a fresh job.
@@ -143,7 +130,7 @@ async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
   // and AES-GCM decryption is sub-millisecond anyway.
   const creds = resolveImapCredentials(account);
 
-  await connections.execute(data.emailAccountId, creds, async (client) => {
+  await imapCache.execute(data.emailAccountId, creds, async (client) => {
     switch (data.type) {
       case "store-flags": {
         const result = await storeFlags(client, {
