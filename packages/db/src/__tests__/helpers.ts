@@ -7,7 +7,7 @@ import { inject } from "vitest";
 
 import { generateId } from "../id";
 import * as schema from "../schema";
-import { emailAccounts, mailboxes, users } from "../schema";
+import { emailAccounts, mailboxes, smtpIdentities, users } from "../schema";
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -72,6 +72,26 @@ export async function createTestMailbox(
     emailAccountId,
     path: overrides?.path ?? "INBOX",
     role: overrides?.role ?? "inbox",
+  });
+  return id;
+}
+
+/** Insert a minimal SMTP identity row. Returns the generated ID. */
+export async function createTestSmtpIdentity(
+  db: Db,
+  emailAccountId: string,
+  overrides?: { id?: string; fromAddress?: string },
+) {
+  const id = overrides?.id ?? generateId();
+  await db.insert(smtpIdentities).values({
+    id,
+    emailAccountId,
+    fromAddress: overrides?.fromAddress ?? `smtp-${id}@test.local`,
+    smtpHost: "localhost",
+    smtpPort: 587,
+    smtpSecurity: "starttls",
+    encryptedPassword: "encrypted-placeholder",
+    keyVersion: 1,
   });
   return id;
 }

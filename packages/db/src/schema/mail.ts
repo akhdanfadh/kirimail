@@ -1,9 +1,13 @@
-import type { MessageAddress } from "@kirimail/shared";
+import type { MessageAddress, SmtpErrorCategory } from "@kirimail/shared";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
+import { sql } from "drizzle-orm";
 import {
-  type AnyPgColumn,
   bigint,
   boolean,
+  bytea,
+  check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -187,6 +191,101 @@ export const smtpIdentities = pgTable(
     unique("smtp_identities_email_account_id_from_address_uniq").on(
       table.emailAccountId,
       table.fromAddress,
+    ),
+    // Trivially unique (id is already PK), declared so composite foreign
+    // keys on (email_account_id, id) — e.g., outbound_messages's ownership
+    // check — have a targetable parent reference.
+    unique("smtp_identities_email_account_id_id_uniq").on(table.emailAccountId, table.id),
+  ],
+);
+
+/** Lifecycle status of an {@link outboundMessages} row. */
+export type OutboundMessageStatus = "pending" | "sending" | "sent" | "failed";
+
+/**
+ * In-flight user-initiated outbound messages.
+ *
+ * One row per send request, written synchronously by the send API (MIME
+ * built and validated up front) and consumed asynchronously by the SMTP
+ * send and Sent-folder append workers. The last consumer should delete
+ * the row on success. The authoritative record of a delivered send is the
+ * Sent-folder copy, surfaced as a {@link messages} row on next IMAP sync.
+ */
+export const outboundMessages = pgTable(
+  "outbound_messages",
+  {
+    id: text("id").primaryKey(),
+    emailAccountId: text("email_account_id")
+      .notNull()
+      .references(() => emailAccounts.id, { onDelete: "cascade" }),
+    // The referencing FK is declared below as a composite key over
+    // (emailAccountId, smtpIdentityId) so the DB enforces that the
+    // identity belongs to the email account on the same row — otherwise
+    // a buggy API could let user A send through user B's identity.
+    smtpIdentityId: text("smtp_identity_id").notNull(),
+
+    /**
+     * Raw RFC 5322 bytes, BCC headers included. NOT NULL — a row exists
+     * only to carry these bytes, and no consumer can act on an empty one
+     * (the non-empty CHECK also catches the degenerate zero-length case).
+     */
+    rawMime: bytea("raw_mime").notNull(),
+    /**
+     * Angle-bracketed RFC 2822 Message-ID, stable across retries.
+     * Uniqueness is enforced per email account.
+     */
+    messageId: text("message_id").notNull(),
+
+    status: text("status").$type<OutboundMessageStatus>().notNull().default("pending"),
+    /**
+     * SMTP dispatch attempt counter at the domain layer.
+     * Distinct from pg-boss's internal job retry counters.
+     */
+    attempts: integer("attempts").notNull().default(0),
+    /** Classified category paired with `lastError`. Non-null iff `lastError` is non-null. */
+    lastErrorCategory: text("last_error_category").$type<SmtpErrorCategory>(),
+    lastError: text("last_error"),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (table) => [
+    index("outbound_messages_email_account_id_idx").on(table.emailAccountId),
+    unique("outbound_messages_email_account_id_message_id_uniq").on(
+      table.emailAccountId,
+      table.messageId,
+    ),
+    // Composite FK: enforces that the identity belongs to the email account
+    // on the same row — column-level FKs alone only validate each target
+    // exists, not that the two are related.
+    //
+    // Restrict: protects in-flight sends (pending/sending) from losing
+    // their identity mid-transmission. `failed` rows also hold this FK;
+    // the delete-identity API must clean them up in the same transaction.
+    //
+    // NOTE: Account deletion still succeeds because the cascade via
+    // `emailAccountId` removes these rows before the `smtpIdentities`
+    // cascade's restrict check evaluates. Relies on Postgres RI queue
+    // ordering; verified by the cascade integration test. TODO: replace
+    // with DEFERRABLE INITIALLY DEFERRED once Drizzle exposes it
+    // (drizzle-team/drizzle-orm#1429).
+    foreignKey({
+      name: "outbound_messages_identity_owned_by_account_fk",
+      columns: [table.emailAccountId, table.smtpIdentityId],
+      foreignColumns: [smtpIdentities.emailAccountId, smtpIdentities.id],
+    }).onDelete("restrict"),
+    // rawMime must never be an empty buffer — a zero-length MIME payload
+    // would indicate a caller bug and nothing would accept it downstream.
+    check("outbound_messages_raw_mime_non_empty_chk", sql`octet_length(${table.rawMime}) > 0`),
+    // lastError and lastErrorCategory must either both be null or both be
+    // non-null — the category has no meaning without its message and vice versa.
+    check(
+      "outbound_messages_last_error_pair_chk",
+      sql`(${table.lastError} IS NULL) = (${table.lastErrorCategory} IS NULL)`,
     ),
   ],
 );

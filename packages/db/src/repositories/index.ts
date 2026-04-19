@@ -1,3 +1,15 @@
+export type { InsertOutboundMessageInput } from "./outbound-messages";
+
 export { getEmailAccountById, listAllEmailAccountIds } from "./email-account";
 export { applyMailboxSync, findMailboxPathByRole, reconcileMailboxes } from "./mailbox";
+export {
+  deleteOutboundMessage,
+  getOutboundMessageById,
+  insertOutboundMessage,
+  markOutboundMessageFailed,
+  markPendingOutboundMessageSending,
+  markSendingOutboundMessageSent,
+  resetSendingOutboundMessageToPending,
+  retryFailedOutboundMessage,
+} from "./outbound-messages";
 export { getSmtpIdentityById } from "./smtp-identity";
