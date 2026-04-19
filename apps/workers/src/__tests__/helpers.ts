@@ -101,6 +101,52 @@ export async function createSmtpIdentityStub(
   return id;
 }
 
+interface SmtpIdentityOverrides {
+  fromAddress?: string;
+  appendToSent?: boolean;
+  smtpHost?: string;
+  smtpPort?: number;
+  smtpPassword?: string;
+}
+
+/**
+ * Insert an SMTP identity with properly encrypted credentials pointing to
+ * the Stalwart test container. Returns the identity ID.
+ *
+ * Distinct from {@link createSmtpIdentityStub}: the password here is a real
+ * Stalwart principal credential, so `resolveSmtpCredentials` + SMTP AUTH
+ * succeed end-to-end. Use this for send-message tests; keep the stub for
+ * append-sent tests that never decrypt.
+ */
+export async function createEncryptedSmtpIdentity(
+  db: Db,
+  emailAccountId: string,
+  overrides?: SmtpIdentityOverrides,
+) {
+  const id = randomUUID();
+  const key = Buffer.from(inject("encryptionKey"), "hex");
+  const envelope = encryptCredential(overrides?.smtpPassword ?? "testpass", key, 1);
+
+  await db.insert(schema.smtpIdentities).values({
+    id,
+    emailAccountId,
+    // Stalwart's memory directory authenticates by principal name (e.g.,
+    // "smtpsender"), not full email. resolveSmtpCredentials uses fromAddress
+    // as the AUTH user, so we store the principal name here — same pattern
+    // as createEncryptedEmailAccount storing principal name as emailAddress.
+    // must-match-sender is disabled in the test Stalwart config so the
+    // envelope sender doesn't need to match the principal's registered email.
+    fromAddress: overrides?.fromAddress ?? "smtpsender",
+    smtpHost: overrides?.smtpHost ?? inject("stalwartHost"),
+    smtpPort: overrides?.smtpPort ?? inject("stalwartSmtpPort"),
+    smtpSecurity: "none",
+    encryptedPassword: serializeEnvelope(envelope),
+    keyVersion: 1,
+    appendToSent: overrides?.appendToSent ?? true,
+  });
+  return id;
+}
+
 /**
  * Ensure a Sent mailbox exists both on the IMAP server and in the DB, so
  * `findMailboxPathByRole` resolves and `appendToSentFolder` can APPEND

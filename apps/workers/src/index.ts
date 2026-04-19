@@ -7,6 +7,7 @@ import {
   registerAppendSent,
   registerImapCommand,
   registerOutboundReaper,
+  registerSendMessage,
   registerSyncEmailAccount,
   registerSyncScheduler,
 } from "./handlers";
@@ -40,14 +41,17 @@ export async function startWorkers(): Promise<WorkerHandle> {
   await boss.start();
 
   // Queue registrations - stop boss if registration fails partway through.
-  // sync-email-account must be registered before the idle pool starts
-  // (the pool enqueues to this queue).
   let idlePool: IdlePool | null = null;
   try {
+    // sync-email-account must be registered before the idle pool starts
+    // (the pool enqueues to this queue).
     await registerSyncEmailAccount(boss);
     await registerSyncScheduler(boss, workerEnv.SYNC_CRON_SCHEDULE);
     await registerImapCommand(boss);
+    // append-sent must register before send-message, since send-message enqueues
+    // append-sent on success and boss.send fails for a queue that doesn't exist.
     await registerAppendSent(boss);
+    await registerSendMessage(boss);
     await registerOutboundReaper(boss);
 
     idlePool = new IdlePool(boss);

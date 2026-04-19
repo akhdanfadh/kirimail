@@ -21,6 +21,7 @@ import {
   markOutboundMessageFailed,
   markPendingOutboundMessageSending,
   markSendingOutboundMessageSent,
+  reapStaleSendingOutboundMessages,
   reapStaleSentOutboundMessages,
   resetSendingOutboundMessageToPending,
   retryFailedOutboundMessage,
@@ -51,7 +52,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   // Scope cleanup to the table this file writes. Do not wipe shared parents
-  // (emailAccounts, users) — cascade would hit mailbox tests running in
+  // (emailAccounts, users) - cascade would hit mailbox tests running in
   // parallel against the same test container. Fresh generated IDs make
   // per-test accumulation harmless for our assertions.
   await db.delete(outboundMessages);
@@ -79,7 +80,7 @@ function buildInput(overrides?: Partial<InsertOutboundMessageInput>): InsertOutb
 
 describe("outboundMessages repository", () => {
   it("preserves BYTEA bytes exactly across insert and read", async () => {
-    // 2KB payload mixing nulls, high bits, and printable ASCII — the kind of
+    // 2KB payload mixing nulls, high bits, and printable ASCII - the kind of
     // bytes a text-encoded column or a wrong driver mapping would corrupt.
     const payload = Buffer.alloc(2048);
     for (let i = 0; i < payload.length; i++) {
@@ -120,7 +121,7 @@ describe("outboundMessages repository", () => {
     // recipients mid-DATA. The row transitions to `sent` (message is on the
     // wire) but carries the rejected list so the Outbox can distinguish
     // full from partial delivery. A regression here would surface as
-    // silent data loss — users see "sent" while some recipients were
+    // silent data loss - users see "sent" while some recipients were
     // dropped.
     const inserted = await insertOutboundMessage(db, buildInput());
     await markPendingOutboundMessageSending(db, inserted!.id);
@@ -224,7 +225,7 @@ describe("outboundMessages repository", () => {
   it("rejects markOutboundMessageFailed on an already-sent row (resurrection guard)", async () => {
     // A delayed or duplicated worker that reports failure after another
     // worker has already marked the row `sent` must not flip the status
-    // back to `failed` — the email has already been delivered.
+    // back to `failed` - the email has already been delivered.
     const inserted = await insertOutboundMessage(db, buildInput());
     await markPendingOutboundMessageSending(db, inserted!.id);
     await markSendingOutboundMessageSent(db, inserted!.id);
@@ -246,7 +247,7 @@ describe("outboundMessages repository", () => {
     expect(row!.lastErrorCategory).toBeNull();
   });
 
-  it("markSending rejects failed rows — retryFailedOutboundMessage owns failed -> sending", async () => {
+  it("markSending rejects failed rows - retryFailedOutboundMessage owns failed -> sending", async () => {
     // A buggy worker that throws after markFailed would trigger pg-boss to
     // retry and re-enter markSending. `failed` must be terminal for automatic
     // retry; explicit admin-initiated retry uses a distinct function.
@@ -282,7 +283,7 @@ describe("outboundMessages repository", () => {
     expect(again).toBeUndefined();
   });
 
-  it("markFailed rejects a failed row — no silent overwrite of lastError", async () => {
+  it("markFailed rejects a failed row - no silent overwrite of lastError", async () => {
     // A delayed duplicate failure report must not trample the existing
     // error metadata on a row that's already failed. An explicit
     // "refresh failure reason" need would be a new, separately-named
@@ -302,7 +303,7 @@ describe("outboundMessages repository", () => {
     expect(row!.lastErrorCategory).toBe("auth");
   });
 
-  it("serializes concurrent markPendingOutboundMessageSending — only one transition succeeds", async () => {
+  it("serializes concurrent markPendingOutboundMessageSending - only one transition succeeds", async () => {
     // Two concurrent markSending calls race. Whatever the serialization
     // mechanism (row lock in Postgres, connection queueing in the pool,
     // or anything else), the observable property is what matters: exactly
@@ -320,7 +321,7 @@ describe("outboundMessages repository", () => {
     expect(winners[0]!.attempts).toBe(1);
   });
 
-  it("serializes concurrent markSent vs markFailed — exactly one transition wins", async () => {
+  it("serializes concurrent markSent vs markFailed - exactly one transition wins", async () => {
     // Worker A's success and worker B's late error reach the DB at the same
     // time. Whatever the serialization mechanism, exactly one UPDATE lands
     // and the other's guard rejects. No intermediate state where both
@@ -370,7 +371,7 @@ describe("outboundMessages repository", () => {
     expect(row!.attempts).toBe(1);
   });
 
-  it("retryFailedOutboundMessage rejects non-failed rows — admin-retry is failed-only", async () => {
+  it("retryFailedOutboundMessage rejects non-failed rows - admin-retry is failed-only", async () => {
     // The guard is `status = 'failed'` specifically. Accepting `pending` would
     // silently bump attempts on a row the normal flow is about to pick up;
     // accepting `sending` would double-dispatch under a concurrent worker;
@@ -397,7 +398,7 @@ describe("outboundMessages repository", () => {
     expect(await retryFailedOutboundMessage(db, sentRow!.id)).toBeUndefined();
   });
 
-  it("resetSendingOutboundMessageToPending rejects non-sending rows — no resurrection", async () => {
+  it("resetSendingOutboundMessageToPending rejects non-sending rows - no resurrection", async () => {
     // The guard is `status = 'sending'` specifically. Accepting `sent` would
     // resurrect a delivered email; accepting `failed` would bypass the
     // explicit admin-retry path; accepting `pending` would stamp a stale
@@ -518,10 +519,10 @@ describe("outboundMessages repository", () => {
     // no non-sent row can carry a non-null sentAt, so an old sentAt is
     // sufficient identification of an abandoned sent row. If this CHECK were
     // ever dropped, the reaper could silently start sweeping pending/sending/
-    // failed rows — protect the declaration with an explicit test.
+    // failed rows - protect the declaration with an explicit test.
     const inserted = await insertOutboundMessage(db, buildInput());
 
-    // pending row with sentAt stamped — forbidden.
+    // pending row with sentAt stamped - forbidden.
     await expect(
       db
         .update(outboundMessages)
@@ -531,7 +532,7 @@ describe("outboundMessages repository", () => {
       cause: { code: "23514", constraint: "outbound_messages_sent_at_matches_status_chk" },
     });
 
-    // sent row with sentAt nulled — also forbidden.
+    // sent row with sentAt nulled - also forbidden.
     await markPendingOutboundMessageSending(db, inserted!.id);
     await markSendingOutboundMessageSent(db, inserted!.id);
     await expect(
@@ -547,7 +548,7 @@ describe("outboundMessages repository", () => {
   describe("reapStaleSentOutboundMessages", () => {
     // `outbound_messages_sent_at_matches_status_chk` guarantees only sent rows
     // have non-null sentAt, so setting (status='sent', sentAt=<date>) via raw
-    // update is the only configuration we need to cover — non-sent rows with
+    // update is the only configuration we need to cover - non-sent rows with
     // stale sentAt cannot exist in this schema and so are not worth testing.
     async function backdateSentRow(id: string, sentAt: Date) {
       await db
@@ -583,6 +584,54 @@ describe("outboundMessages repository", () => {
 
       expect(reaped).toEqual([]);
       expect(await getOutboundMessageById(db, row!.id)).toBeDefined();
+    });
+  });
+
+  describe("reapStaleSendingOutboundMessages", () => {
+    // Backdate both status and updatedAt in one statement so the CHECK
+    // constraints hold and the reaper's WHERE predicate sees aged rows.
+    async function backdateSendingRow(id: string, updatedAt: Date) {
+      await db
+        .update(outboundMessages)
+        .set({ status: "sending", updatedAt })
+        .where(eq(outboundMessages.id, id));
+    }
+
+    const REAPER_ERROR = "send-message worker exceeded 60min; delivery status unknown";
+
+    it("marks sending rows past the cutoff failed with delivery-unknown stamped", async () => {
+      const stale = await insertOutboundMessage(db, buildInput({ messageId: "<stale@k.local>" }));
+      const fresh = await insertOutboundMessage(db, buildInput({ messageId: "<fresh@k.local>" }));
+      const cutoff = new Date("2025-01-01T00:00:00Z");
+      await backdateSendingRow(stale!.id, new Date("2024-12-31T23:00:00Z"));
+      await backdateSendingRow(fresh!.id, new Date("2025-01-01T01:00:00Z"));
+
+      const reaped = await reapStaleSendingOutboundMessages(db, cutoff, REAPER_ERROR);
+
+      expect(reaped.map((r) => r.id)).toEqual([stale!.id]);
+
+      const reapedRow = await getOutboundMessageById(db, stale!.id);
+      expect(reapedRow?.status).toBe("failed");
+      expect(reapedRow?.lastErrorCategory).toBe("delivery-unknown");
+      expect(reapedRow?.lastError).toBe(REAPER_ERROR);
+
+      const freshRow = await getOutboundMessageById(db, fresh!.id);
+      expect(freshRow?.status).toBe("sending");
+      expect(freshRow?.lastErrorCategory).toBeNull();
+    });
+
+    it("treats the cutoff as strict less-than (updatedAt === cutoff is spared)", async () => {
+      // Mirrors the sent-reaper boundary test: pins the `<` semantics so a
+      // future refactor to `<=` can't silently change reap behavior.
+      const cutoff = new Date("2025-01-01T00:00:00Z");
+      const row = await insertOutboundMessage(db, buildInput());
+      await backdateSendingRow(row!.id, cutoff);
+
+      const reaped = await reapStaleSendingOutboundMessages(db, cutoff, REAPER_ERROR);
+
+      expect(reaped).toEqual([]);
+      const untouched = await getOutboundMessageById(db, row!.id);
+      expect(untouched?.status).toBe("sending");
     });
   });
 });

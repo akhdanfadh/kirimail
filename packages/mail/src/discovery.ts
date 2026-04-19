@@ -71,7 +71,7 @@ export function mapMailboxRole(
 }
 
 /**
- * True when the send-email handler should APPEND to the Sent folder after
+ * True when the worker (caller) should APPEND to the Sent folder after
  * SMTP delivery; false when the provider auto-copies server-side (Gmail,
  * Outlook), where an explicit APPEND would duplicate.
  *
@@ -99,9 +99,8 @@ export interface DiscoveryResult {
   /** Root-level mailboxes; descendants are nested via {@link DiscoveredMailbox.children}. */
   mailboxes: DiscoveredMailbox[];
   /**
-   * Whether the send-email handler should APPEND to the Sent folder after
-   * SMTP delivery. False for providers that auto-copy server-side (Gmail,
-   * Outlook).
+   * Whether the worker (caller) should APPEND to the Sent folder after SMTP delivery.
+   * False for providers that auto-copy server-side (Gmail, Outlook).
    */
   appendToSent: boolean;
 }

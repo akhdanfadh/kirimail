@@ -83,11 +83,9 @@ export type AppendToSentFolderInput = Omit<AppendToMailboxInput, "flags">;
  * {@link pending} chain. Throws on failure; callers decide retry vs
  * dead-letter based on the error type.
  *
- * NOTE: APPEND is unconditional here. The send-email job handler must check
- * `smtp_identities.appendToSent` (set at account setup from the discovery-time
- * provider heuristic) and skip enqueuing the append-sent job when the provider
- * auto-copies to Sent (Gmail, Outlook).
- * TODO: Wire the `appendToSent` check in the send-email handler.
+ * NOTE: APPEND is unconditional here. Provider auto-copy awareness (Gmail,
+ * Outlook) is gated upstream by callers consulting `smtp_identities.appendToSent`;
+ * this primitive always performs the APPEND when invoked.
  */
 export function appendToMailbox(input: AppendToMailboxInput): Promise<AppendToMailboxResult> {
   const { emailAccountId, mailboxPath, messageId } = input;

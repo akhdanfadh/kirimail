@@ -1,6 +1,6 @@
 import type { Job, PgBoss } from "pg-boss";
 
-import { db, reapStaleSentOutboundMessages } from "@kirimail/db";
+import { db, reapStaleSendingOutboundMessages, reapStaleSentOutboundMessages } from "@kirimail/db";
 
 /**
  * Age threshold for a `sent` outbound_messages row to be considered abandoned.
@@ -12,6 +12,21 @@ import { db, reapStaleSentOutboundMessages } from "@kirimail/db";
  */
 export const SENT_ROW_REAPER_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Age threshold for a `sending` outbound_messages row to be considered stuck.
+ *
+ * A legitimate send-message handler completes within its own queue's
+ * `expireInSeconds` (10min) and transitions the row out of `sending`.
+ * After a mid-send crash the row is stuck with `updatedAt` frozen at the
+ * last `markSending` commit: subsequent pg-boss retries read
+ * `status='sending'` and early-return without refreshing it, so the age
+ * signal measures time since crash, not time since last work.
+ *
+ * One hour is conservative over the 10-min active ceiling; could tighten
+ * toward ~15min if reaper latency matters.
+ */
+export const SENDING_ROW_REAPER_THRESHOLD_MS = 60 * 60 * 1000;
+
 /** How often the reaper runs. Standard cron expression consumed by pg-boss. */
 const REAPER_CRON_SCHEDULE = "*/15 * * * *";
 
@@ -20,8 +35,9 @@ export async function registerOutboundReaper(boss: PgBoss): Promise<void> {
   await boss.createQueue("outbound-reaper", {
     policy: "stately",
     // retryLimit: 0 - the 15-min cron is a more reliable retry than pg-boss's backoff,
-    // and the reap DELETE is idempotent across runs (a second pass on the same rows
-    // returns empty). Retrying would add log noise without adding reliability.
+    // and the reap statements are idempotent across runs (a second pass returns empty
+    // for sent rows, and `sending` rows reaped once are no longer in `sending`).
+    // Retrying would add log noise without adding reliability.
     retryLimit: 0,
     expireInSeconds: 120,
   });
@@ -31,6 +47,7 @@ export async function registerOutboundReaper(boss: PgBoss): Promise<void> {
     console.log(`[outbound-reaper] running (trigger: ${job.id})`);
     try {
       await reapStaleSentRows();
+      await reapStaleSendingRows();
     } catch (err) {
       // retryLimit: 0 means pg-boss drops the job on failure; make sure at least
       // one error line with context lands in operator logs before the rethrow.
@@ -70,5 +87,36 @@ export async function reapStaleSentRows(): Promise<void> {
   }
 
   // Trailing confirmation so quiet (zero-row) runs still show the DELETE completed.
-  console.log(`[outbound-reaper] sweep complete, reaped ${reaped.length} row(s)`);
+  console.log(`[outbound-reaper] sent-sweep complete, reaped ${reaped.length} row(s)`);
+}
+
+/**
+ * Transition stuck `sending` outbound_messages rows to `failed` with
+ * `delivery-unknown` stamped.
+ *
+ * Rows reach this state when the send-message handler died between
+ * `markPendingSending` and any terminal helper - process crash, pg-boss
+ * job expiry, or uncaught exception mid-handler.
+ *
+ * Marks rather than deletes (contrast with the sent reaper): SMTP outcome
+ * is indeterminate, so the row is preserved instead of swept.
+ *
+ * NOTE: UPDATE is unbounded, same shape as the sent reaper. If backlogs
+ * ever reach thousands, add `LIMIT N` to the repository helper and let the
+ * cron drain in batches.
+ */
+export async function reapStaleSendingRows(): Promise<void> {
+  const olderThan = new Date(Date.now() - SENDING_ROW_REAPER_THRESHOLD_MS);
+  const thresholdMin = Math.round(SENDING_ROW_REAPER_THRESHOLD_MS / 60_000);
+  const lastError = `send-message worker exceeded ${thresholdMin}min; delivery status unknown`;
+  const reaped = await reapStaleSendingOutboundMessages(db, olderThan, lastError);
+
+  for (const row of reaped) {
+    console.warn(
+      `[outbound-reaper] reaped stuck sending row ${row.id} ` +
+        `(account ${row.emailAccountId}, messageId ${row.messageId}, attempts ${row.attempts})`,
+    );
+  }
+
+  console.log(`[outbound-reaper] sending-sweep complete, reaped ${reaped.length} row(s)`);
 }

@@ -23,6 +23,10 @@ max-connections = 8192
 bind = "[::]:143"
 protocol = "imap"
 
+[server.listener.submission]
+bind = "[::]:587"
+protocol = "smtp"
+
 [server.listener.http]
 bind = "[::]:8080"
 protocol = "http"
@@ -71,6 +75,39 @@ class = "individual"
 name = "appendsentuser"
 secret = "testpass"
 email.0000 = "appendsentuser@localhost"
+
+[directory."memory".principals.0005]
+class = "individual"
+name = "smtpsender"
+secret = "testpass"
+email.0000 = "smtpsender@localhost"
+
+[directory."memory".principals.0006]
+class = "individual"
+name = "smtprecipient"
+secret = "testpass"
+email.0000 = "smtprecipient@localhost"
+
+# SMTP submission config for integration tests. must-match-sender=false lets
+# the envelope sender diverge from the authenticated principal's stored email
+# (our helpers use the principal name as fromAddress, not the email). The
+# relay rule accepts mail only from authenticated sessions and resolves the
+# RCPT TO address against the memory directory, which makes unknown-recipient
+# tests (550) possible.
+[session.ehlo]
+reject-non-fqdn = false
+
+[session.auth]
+mechanisms = "[plain, login]"
+directory = "'memory'"
+must-match-sender = false
+
+[session.rcpt]
+relay = [{if = "!is_empty(authenticated_as)", then = true}, {else = false}]
+directory = "'memory'"
+
+[session.data]
+spam-filter = false
 `.trimStart();
 
 // ---------------------------------------------------------------------------
@@ -82,6 +119,7 @@ declare module "vitest" {
     postgresUrl: string;
     stalwartHost: string;
     stalwartImapPort: number;
+    stalwartSmtpPort: number;
     encryptionKey: string;
   }
 }
@@ -116,7 +154,7 @@ export async function setup(project: TestProject) {
       .withCopyContentToContainer([
         { content: STALWART_CONFIG, target: "/opt/stalwart/etc/config.toml" },
       ])
-      .withExposedPorts(143)
+      .withExposedPorts(143, 587)
       .withHealthCheck({
         test: ["CMD-SHELL", "stalwart-cli -u http://localhost:8080 -a server healthcheck"],
         interval: 500,
@@ -150,6 +188,7 @@ export async function setup(project: TestProject) {
   project.provide("postgresUrl", postgresUrl);
   project.provide("stalwartHost", stalwart.getHost());
   project.provide("stalwartImapPort", stalwart.getMappedPort(143));
+  project.provide("stalwartSmtpPort", stalwart.getMappedPort(587));
   project.provide("encryptionKey", encryptionKey);
 }
 

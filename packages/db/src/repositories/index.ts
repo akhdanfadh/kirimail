@@ -9,6 +9,7 @@ export {
   markOutboundMessageFailed,
   markPendingOutboundMessageSending,
   markSendingOutboundMessageSent,
+  reapStaleSendingOutboundMessages,
   reapStaleSentOutboundMessages,
   resetSendingOutboundMessageToPending,
   retryFailedOutboundMessage,

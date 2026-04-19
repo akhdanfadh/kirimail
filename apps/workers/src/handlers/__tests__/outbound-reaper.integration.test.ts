@@ -15,7 +15,12 @@ import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { registerOutboundReaper } from "..";
-import { reapStaleSentRows, SENT_ROW_REAPER_THRESHOLD_MS } from "../outbound-reaper";
+import {
+  reapStaleSendingRows,
+  reapStaleSentRows,
+  SENDING_ROW_REAPER_THRESHOLD_MS,
+  SENT_ROW_REAPER_THRESHOLD_MS,
+} from "../outbound-reaper";
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -55,10 +60,30 @@ async function insertSentRowAgedBy(offsetMs: number): Promise<string> {
     smtpIdentityId,
     rawMime: Buffer.from("MIME-Version: 1.0\r\n\r\nbody"),
     messageId: `<${randomUUID()}@test.local>`,
+    envelopeFrom: "appendsentuser@localhost",
+    envelopeTo: ["recipient@localhost"],
   });
   await db
     .update(schema.outboundMessages)
     .set({ status: "sent", sentAt: new Date(Date.now() - offsetMs) })
+    .where(eq(schema.outboundMessages.id, row!.id));
+  return row!.id;
+}
+
+async function insertSendingRowAgedBy(offsetMs: number): Promise<string> {
+  const row = await insertOutboundMessage(db, {
+    emailAccountId: accountId,
+    smtpIdentityId,
+    rawMime: Buffer.from("MIME-Version: 1.0\r\n\r\nbody"),
+    messageId: `<${randomUUID()}@test.local>`,
+    envelopeFrom: "appendsentuser@localhost",
+    envelopeTo: ["recipient@localhost"],
+  });
+  // Set status and backdate updatedAt in one statement: the handler uses
+  // updatedAt (not sentAt) as the age signal for sending rows.
+  await db
+    .update(schema.outboundMessages)
+    .set({ status: "sending", updatedAt: new Date(Date.now() - offsetMs) })
     .where(eq(schema.outboundMessages.id, row!.id));
   return row!.id;
 }
@@ -97,13 +122,34 @@ describe("outbound-reaper", () => {
     expect(await getOutboundMessageById(db, freshId)).toBeDefined();
   });
 
-  it("registers a pg-boss queue that dispatches the reaper handler on send", async () => {
-    // End-to-end wiring check: `registerOutboundReaper` must create the queue
-    // under the expected name and attach the handler so a `boss.send` reaches
-    // `reapStaleSentRows`. A typo in the queue name, a missing `boss.work`, or
-    // options that reject the send would otherwise only surface in production
-    // (the cron would fire into a queue no worker is consuming).
-    const staleId = await insertSentRowAgedBy(SENT_ROW_REAPER_THRESHOLD_MS + 60_000);
+  it("marks stuck sending rows failed with delivery-unknown when past the threshold", async () => {
+    // Stale sending row -> must be marked failed with delivery-unknown stamped.
+    // Fresh sending row -> must stay untouched.
+    const staleId = await insertSendingRowAgedBy(SENDING_ROW_REAPER_THRESHOLD_MS + 60_000);
+    const freshId = await insertSendingRowAgedBy(SENDING_ROW_REAPER_THRESHOLD_MS - 60_000);
+
+    await reapStaleSendingRows();
+
+    const stale = await getOutboundMessageById(db, staleId);
+    expect(stale?.status).toBe("failed");
+    expect(stale?.lastErrorCategory).toBe("delivery-unknown");
+    expect(stale?.lastError).toContain("delivery status unknown");
+
+    const fresh = await getOutboundMessageById(db, freshId);
+    expect(fresh?.status).toBe("sending");
+    expect(fresh?.lastErrorCategory).toBeNull();
+  });
+
+  it("runs both sweeps in a single pg-boss dispatch", async () => {
+    // Also doubles as the wiring smoke test: `registerOutboundReaper` must
+    // create the queue under the expected name and attach the handler so
+    // `boss.send` dispatches to our sweep code. A typo in the queue name, a
+    // missing `boss.work`, or options rejecting the send would otherwise
+    // only surface in production (the cron firing into a queue no worker
+    // consumes). Beyond wiring, the test pins that both reapers fire per
+    // trigger - a missing await on one sweep would drop this to single-row.
+    const staleSentId = await insertSentRowAgedBy(SENT_ROW_REAPER_THRESHOLD_MS + 60_000);
+    const staleSendingId = await insertSendingRowAgedBy(SENDING_ROW_REAPER_THRESHOLD_MS + 60_000);
 
     const boss = createTestBoss();
     await boss.start();
@@ -114,7 +160,12 @@ describe("outbound-reaper", () => {
       await boss.send("outbound-reaper", {});
       await spy.waitForJob(() => true, "completed");
 
-      expect(await getOutboundMessageById(db, staleId)).toBeUndefined();
+      // Sent row deleted.
+      expect(await getOutboundMessageById(db, staleSentId)).toBeUndefined();
+      // Sending row marked failed (not deleted).
+      const sending = await getOutboundMessageById(db, staleSendingId);
+      expect(sending?.status).toBe("failed");
+      expect(sending?.lastErrorCategory).toBe("delivery-unknown");
     } finally {
       await boss.stop({ graceful: true, timeout: 5_000 });
     }

@@ -3,12 +3,14 @@
  *
  * Status lifecycle:
  *
- *  insert          markSending          markSent       delete
+ *                         1h stale /---> reaped <---\ 6h stale
+ *                                  |                |
+ *  insert          markSending     |    markSent    |  delete
  *  ------> pending -----------> sending --------> sent ------> (gone)
  *           |  ^----------------|  |  ^
  *           |   resetToPending     |  |        retryFailed
  *           |  (transient error)   |  | (account-owner initiated)
- *           |                      |  \---------------------------> failed
+ *           |                      |  \---------------------------- failed
  *           |                      \----------------------------------^  ^
  *           |                        markFailed (deterministic error)    |
  *           \-----------------------------------------------------------/
@@ -26,8 +28,10 @@
  *   NOTE: This temporal invariant isn't expressible at the DB layer. Sustained `sent`
  *   rows (detectable via `sent_at` age) indicate the append worker silently exhausted
  *   retries; operational cleanup via a cron reaper is the right mitigation.
- * - NOTE: `sending` has a symmetric stuck-row risk (send-email crashes mid-SMTP, worker
- *   evicts the job without resetting status). Another reaper job could be added.
+ * - `sending` has the same stuck-row risk (sending worker crashes mid-SMTP
+ *   without resetting status). Detectable via `updated_at` age; the sending-row
+ *   reaper marks such rows `failed` with `delivery-unknown` since the
+ *   transmission outcome is indeterminate.
  */
 
 import type { RetryableSmtpErrorCategory, SmtpErrorCategory } from "@kirimail/shared";
@@ -45,7 +49,7 @@ type Db = NodePgDatabase<typeof schema>;
 // Spread-based projection so new columns flow into `.returning()` sites without touching callers.
 const { rawMime: _rawMime, ...outboundWithoutRawMime } = getColumns(outboundMessages);
 
-/** Cap on stored `lastError` — enough for the head of a verbose SMTP response without bloating the row. */
+/** Cap on stored `lastError` - enough for the head of a verbose SMTP response without bloating the row. */
 const MAX_LAST_ERROR_LENGTH = 1024;
 const TRUNCATION_SUFFIX = "...";
 
@@ -114,7 +118,7 @@ export async function retryFailedOutboundMessage(db: Db, id: string) {
 
 /**
  * Guarded `sending -> pending`. Preserves the `(category, error)` stamp
- * on the row — in contrast with {@link markPendingOutboundMessageSending},
+ * on the row - in contrast with {@link markPendingOutboundMessageSending},
  * which clears it on the next attempt.
  */
 export async function resetSendingOutboundMessageToPending(
@@ -190,6 +194,29 @@ export async function reapStaleSentOutboundMessages(db: Db, olderThan: Date) {
       messageId: outboundMessages.messageId,
       sentAt: outboundMessages.sentAt,
     });
+}
+
+/**
+ * Bulk-transition `sending` rows whose `updatedAt` predates `olderThan`
+ * into `failed`, stamping `delivery-unknown` and the caller-supplied
+ * `lastError` message.
+ *
+ * UPDATE (not DELETE) is deliberate: a stuck `sending` row carries
+ * indeterminate delivery information - the SMTP transmission may have
+ * succeeded, partially succeeded, or never started. Preserving the row
+ * keeps that ambiguity visible; deleting would hide a potential
+ * duplicate-delivery hazard.
+ */
+export async function reapStaleSendingOutboundMessages(db: Db, olderThan: Date, lastError: string) {
+  return db
+    .update(outboundMessages)
+    .set({
+      status: "failed",
+      lastError: truncateErrorMessage(lastError),
+      lastErrorCategory: "delivery-unknown",
+    })
+    .where(and(eq(outboundMessages.status, "sending"), lt(outboundMessages.updatedAt, olderThan)))
+    .returning(outboundWithoutRawMime);
 }
 
 /**

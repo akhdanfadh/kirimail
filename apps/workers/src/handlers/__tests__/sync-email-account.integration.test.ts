@@ -13,7 +13,8 @@ import { eq } from "drizzle-orm";
 import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { registerSyncEmailAccount, registerSyncScheduler, syncEmailAccount } from "..";
+import { registerSyncEmailAccount, registerSyncScheduler } from "..";
+import { syncEmailAccount } from "../sync-email-account";
 
 type Db = NodePgDatabase<typeof schema>;
 

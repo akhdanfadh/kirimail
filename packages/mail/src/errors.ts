@@ -258,5 +258,10 @@ export function classifySmtpError(err: unknown): ClassifySmtpErrorResult {
   }
 
   // 6. Unknown -> transient (a lost email is worse than an extra retry)
+  //
+  // NOTE: if nodemailer's error shape drifts (field renames, new codes),
+  // error objects we'd otherwise classify precisely fall through to here
+  // and silently burn pg-boss's retry budget. Consider a DEBUG log on
+  // this branch once telemetry is wired, so fall-through becomes visible.
   return { category: "transient", message, code, responseCode };
 }
