@@ -235,6 +235,18 @@ export const outboundMessages = pgTable(
      * Uniqueness is enforced per email account.
      */
     messageId: text("message_id").notNull(),
+    /**
+     * SMTP `MAIL FROM` address for this transmission. Bare address form
+     * (no display name, no angle brackets) - producers extract from the
+     * `From` header or take it from the bound SMTP identity.
+     */
+    envelopeFrom: text("envelope_from").notNull(),
+    /**
+     * SMTP `RCPT TO` list. Includes BCC recipients (BCC is stripped from
+     * `rawMime` at transmission time but must still reach the server via
+     * the envelope). Stored as text[]; cardinality > 0 enforced by check.
+     */
+    envelopeTo: text("envelope_to").array().notNull(),
 
     status: text("status").$type<OutboundMessageStatus>().notNull().default("pending"),
     /**
@@ -246,6 +258,15 @@ export const outboundMessages = pgTable(
     /** Classified category paired with `lastError`. Non-null iff `lastError` is non-null. */
     lastErrorCategory: text("last_error_category").$type<SmtpErrorCategory>(),
     lastError: text("last_error"),
+    /**
+     * Recipient addresses accepted at envelope but rejected by the server
+     * during DATA. Empty for a full-acceptance send; non-empty on a `sent`
+     * row means the message reached relay without these specific recipients.
+     */
+    rejectedRecipients: text("rejected_recipients")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
     sentAt: timestamp("sent_at", { withTimezone: true }),
 
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -282,6 +303,9 @@ export const outboundMessages = pgTable(
     // rawMime must never be an empty buffer - a zero-length MIME payload
     // would indicate a caller bug and nothing would accept it downstream.
     check("outbound_messages_raw_mime_non_empty_chk", sql`octet_length(${table.rawMime}) > 0`),
+    // envelopeTo must always have at least one recipient - a zero-recipient
+    // row is meaningless and smtpCache.send would reject it anyway.
+    check("outbound_messages_envelope_to_non_empty_chk", sql`cardinality(${table.envelopeTo}) > 0`),
     // lastError and lastErrorCategory must either both be null or both be
     // non-null - the category has no meaning without its message and vice versa.
     check(

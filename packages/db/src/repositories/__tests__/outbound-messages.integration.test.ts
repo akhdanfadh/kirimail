@@ -67,6 +67,8 @@ function buildInput(overrides?: Partial<InsertOutboundMessageInput>): InsertOutb
     smtpIdentityId,
     rawMime: Buffer.from("From: a@test.local\r\nTo: b@test.local\r\n\r\nhi"),
     messageId: "<test@kirimail.local>",
+    envelopeFrom: "a@test.local",
+    envelopeTo: ["b@test.local"],
     ...overrides,
   };
 }
@@ -98,6 +100,7 @@ describe("outboundMessages repository", () => {
     expect(inserted!.status).toBe("pending");
     expect(inserted!.attempts).toBe(0);
     expect(inserted!.sentAt).toBeNull();
+    expect(inserted!.rejectedRecipients).toEqual([]);
 
     const sending = await markPendingOutboundMessageSending(db, inserted!.id);
     expect(sending).toBeDefined();
@@ -108,6 +111,44 @@ describe("outboundMessages repository", () => {
     expect(sent).toBeDefined();
     expect(sent!.status).toBe("sent");
     expect(sent!.sentAt).toBeInstanceOf(Date);
+    // Default path: full acceptance -> empty rejected list.
+    expect(sent!.rejectedRecipients).toEqual([]);
+  });
+
+  it("persists rejectedRecipients when markSent is called with a non-empty list", async () => {
+    // Partial-rejection path: server accepted envelope but refused some
+    // recipients mid-DATA. The row transitions to `sent` (message is on the
+    // wire) but carries the rejected list so the Outbox can distinguish
+    // full from partial delivery. A regression here would surface as
+    // silent data loss — users see "sent" while some recipients were
+    // dropped.
+    const inserted = await insertOutboundMessage(db, buildInput());
+    await markPendingOutboundMessageSending(db, inserted!.id);
+    const sent = await markSendingOutboundMessageSent(db, inserted!.id, [
+      "bounced@example.com",
+      "closed@example.net",
+    ]);
+    expect(sent!.status).toBe("sent");
+    expect(sent!.rejectedRecipients).toEqual(["bounced@example.com", "closed@example.net"]);
+  });
+
+  it("truncates oversized lastError payloads stored on error transitions", async () => {
+    // Pins the repo-layer ceiling so a pathological SMTP banner can't
+    // balloon the stored row (and, by extension, the Outbox render).
+    // Truncation lives in the repo so every error-writing transition
+    // enforces it without per-caller ceremony.
+    const inserted = await insertOutboundMessage(db, buildInput());
+    await markPendingOutboundMessageSending(db, inserted!.id);
+    const huge = "x".repeat(4096);
+
+    const reset = await resetSendingOutboundMessageToPending(db, inserted!.id, "transient", huge);
+    expect(reset!.lastError!.length).toBeLessThanOrEqual(1024);
+    expect(reset!.lastError!.endsWith("...")).toBe(true);
+
+    await markPendingOutboundMessageSending(db, inserted!.id);
+    const failed = await markOutboundMessageFailed(db, inserted!.id, "auth", huge);
+    expect(failed!.lastError!.length).toBeLessThanOrEqual(1024);
+    expect(failed!.lastError!.endsWith("...")).toBe(true);
   });
 
   it("walks the failure lifecycle pending -> sending -> failed", async () => {

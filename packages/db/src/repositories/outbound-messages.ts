@@ -45,6 +45,15 @@ type Db = NodePgDatabase<typeof schema>;
 // Spread-based projection so new columns flow into `.returning()` sites without touching callers.
 const { rawMime: _rawMime, ...outboundWithoutRawMime } = getColumns(outboundMessages);
 
+/** Cap on stored `lastError` — enough for the head of a verbose SMTP response without bloating the row. */
+const MAX_LAST_ERROR_LENGTH = 1024;
+const TRUNCATION_SUFFIX = "...";
+
+function truncateErrorMessage(msg: string): string {
+  if (msg.length <= MAX_LAST_ERROR_LENGTH) return msg;
+  return msg.slice(0, MAX_LAST_ERROR_LENGTH - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
+}
+
 /** Input accepted by {@link insertOutboundMessage}. */
 export interface InsertOutboundMessageInput {
   emailAccountId: string;
@@ -52,6 +61,10 @@ export interface InsertOutboundMessageInput {
   smtpIdentityId: string;
   rawMime: Buffer;
   messageId: string;
+  /** SMTP MAIL FROM address (bare, no display name / angle brackets). */
+  envelopeFrom: string;
+  /** SMTP RCPT TO list, including BCC. Must be non-empty. */
+  envelopeTo: string[];
 }
 
 /** Insert a `pending` row with `attempts=0` (schema defaults). */
@@ -100,8 +113,9 @@ export async function retryFailedOutboundMessage(db: Db, id: string) {
 }
 
 /**
- * Guarded `sending -> pending`. Stamps `(category, error)` so the UI
- * can render "retrying: <reason>" until the next attempt clears them.
+ * Guarded `sending -> pending`. Preserves the `(category, error)` stamp
+ * on the row — in contrast with {@link markPendingOutboundMessageSending},
+ * which clears it on the next attempt.
  */
 export async function resetSendingOutboundMessageToPending(
   db: Db,
@@ -111,20 +125,35 @@ export async function resetSendingOutboundMessageToPending(
 ) {
   const [row] = await db
     .update(outboundMessages)
-    .set({ status: "pending", lastError: error, lastErrorCategory: category })
+    .set({
+      status: "pending",
+      lastError: truncateErrorMessage(error),
+      lastErrorCategory: category,
+    })
     .where(and(eq(outboundMessages.id, id), eq(outboundMessages.status, "sending")))
     .returning(outboundWithoutRawMime);
   return row;
 }
 
 /**
- * Guarded `sending -> sent`. Stamps `sentAt`.
- * The last consumer should then call {@link deleteOutboundMessage}.
+ * Guarded `sending -> sent`. Stamps `sentAt` and persists
+ * `rejectedRecipients` (empty for full acceptance). The last consumer
+ * should then call {@link deleteOutboundMessage}.
  */
-export async function markSendingOutboundMessageSent(db: Db, id: string) {
+export async function markSendingOutboundMessageSent(
+  db: Db,
+  id: string,
+  rejectedRecipients: string[] = [],
+) {
   const [row] = await db
     .update(outboundMessages)
-    .set({ status: "sent", sentAt: new Date(), lastError: null, lastErrorCategory: null })
+    .set({
+      status: "sent",
+      sentAt: new Date(),
+      lastError: null,
+      lastErrorCategory: null,
+      rejectedRecipients,
+    })
     .where(and(eq(outboundMessages.id, id), eq(outboundMessages.status, "sending")))
     .returning(outboundWithoutRawMime);
   return row;
@@ -175,7 +204,11 @@ export async function markOutboundMessageFailed(
 ) {
   const [row] = await db
     .update(outboundMessages)
-    .set({ status: "failed", lastError: error, lastErrorCategory: category })
+    .set({
+      status: "failed",
+      lastError: truncateErrorMessage(error),
+      lastErrorCategory: category,
+    })
     .where(
       and(eq(outboundMessages.id, id), inArray(outboundMessages.status, ["pending", "sending"])),
     )

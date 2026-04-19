@@ -90,6 +90,8 @@ async function seedSentRow(messageId: string, raw: Buffer): Promise<string> {
     smtpIdentityId,
     rawMime: raw,
     messageId,
+    envelopeFrom: "appendsentuser@localhost",
+    envelopeTo: ["recipient@localhost"],
   });
   if (!row) throw new Error("insertOutboundMessage returned undefined");
   await markPendingOutboundMessageSending(db, row.id);
@@ -232,7 +234,7 @@ describe("append-sent via pg-boss", () => {
     const raw = buildTestMime(messageId, "Wrong-State");
 
     // Defense-in-depth: the repository state machine has no transition out of
-    // `sent` and send-email only enqueues append-sent after the markSent tx
+    // `sent` and send-message only enqueues append-sent after the markSent tx
     // commits, so a `pending` row reaching this handler implies out-of-band
     // mutation (direct SQL, migration, future bug). The handler must still
     // refuse to APPEND or delete.
@@ -241,6 +243,8 @@ describe("append-sent via pg-boss", () => {
       smtpIdentityId,
       rawMime: raw,
       messageId,
+      envelopeFrom: "appendsentuser@localhost",
+      envelopeTo: ["recipient@localhost"],
     });
     expect(inserted).toBeDefined();
     const insertedId = inserted!.id;
@@ -277,6 +281,8 @@ describe("append-sent via pg-boss", () => {
       smtpIdentityId,
       rawMime: raw,
       messageId: malformedId, // no angle brackets - triggers non-retriable error
+      envelopeFrom: "appendsentuser@localhost",
+      envelopeTo: ["recipient@localhost"],
     });
     expect(row).toBeDefined();
     const rowId = row!.id;
