@@ -4,7 +4,10 @@ import { Meilisearch } from "meilisearch";
 
 import { searchEnv } from "./env";
 
-/** Build a Meilisearch client with arbitrary config. */
+/**
+ * Build a Meilisearch client with arbitrary config. Tests use this to point
+ * at a per-pid testcontainer; production code uses {@link searchClient}.
+ */
 export function createSearchClient(config: Config): Meilisearch {
   return new Meilisearch(config);
 }
