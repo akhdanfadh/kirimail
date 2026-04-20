@@ -10,13 +10,19 @@ import * as schema from "../schema";
 
 declare module "vitest" {
   export interface ProvidedContext {
-    databaseUrl: string;
+    postgresUrl: string;
   }
 }
 
 let container: StartedTestContainer;
 
-/** Start a Postgres container and push the Drizzle schema into it. */
+/**
+ * Start a Postgres container and push the Drizzle schema into `kirimail_test`,
+ * which serves as a TEMPLATE for per-worker databases created in
+ * `setup-env.ts`. Workers clone the template (`CREATE DATABASE ... TEMPLATE`)
+ * so every test file gets an isolated copy and global DELETE statements stop
+ * racing across files.
+ */
 export async function setup(project: TestProject) {
   container = await new GenericContainer("postgres:18-alpine")
     .withExposedPorts(5432)
@@ -36,15 +42,16 @@ export async function setup(project: TestProject) {
 
   const host = container.getHost();
   const port = container.getMappedPort(5432);
-  const databaseUrl = `postgresql://test:test@${host}:${port}/kirimail_test`;
+  const postgresUrl = `postgresql://test:test@${host}:${port}/postgres`;
+  const templateUrl = `postgresql://test:test@${host}:${port}/kirimail_test`;
 
-  const pool = new Pool({ connectionString: databaseUrl });
-  const db = drizzle({ client: pool });
+  const templatePool = new Pool({ connectionString: templateUrl });
+  const db = drizzle({ client: templatePool });
   const { apply } = await pushSchema(schema, db);
   await apply();
-  await pool.end();
+  await templatePool.end();
 
-  project.provide("databaseUrl", databaseUrl);
+  project.provide("postgresUrl", postgresUrl);
 }
 
 /** Stop the Postgres container after all tests complete. */

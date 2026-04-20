@@ -51,10 +51,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  // Scope cleanup to the table this file writes. Do not wipe shared parents
-  // (emailAccounts, users) - cascade would hit mailbox tests running in
-  // parallel against the same test container. Fresh generated IDs make
-  // per-test accumulation harmless for our assertions.
+  // Per-worker databases (see src/__tests__/setup-env.ts) mean this file's
+  // writes are isolated from other test files. Wipe only the tables this
+  // file owns - shared parents (users, emailAccounts) are untouched so
+  // cross-test accumulation within this one worker stays cheap.
   await db.delete(outboundMessages);
 
   userId = await createTestUser(db);
