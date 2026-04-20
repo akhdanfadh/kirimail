@@ -1,5 +1,13 @@
+export type { InsertDomainEventInput } from "./domain-event";
 export type { InsertOutboundMessageInput } from "./outbound-messages";
 
+export {
+  insertDomainEvent,
+  insertDomainEvents,
+  listUnconsumedDomainEvents,
+  markDomainEventConsumed,
+  markDomainEventFailed,
+} from "./domain-event";
 export { getEmailAccountById, listAllEmailAccountIds } from "./email-account";
 export { applyMailboxSync, findMailboxPathByRole, reconcileMailboxes } from "./mailbox";
 export {
