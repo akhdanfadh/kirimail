@@ -1,3 +1,5 @@
+import type { DomainAggregateType, DomainEventType } from "@kirimail/shared";
+
 import { index, integer, jsonb, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
 /**
@@ -15,6 +17,14 @@ import { index, integer, jsonb, pgTable, primaryKey, text, timestamp } from "dri
  * `listUnconsumedDomainEvents` tick exceeds ~50ms in production - fix
  * is a retention cron, or the reindex primitive's truncate-and-reemit
  * flow once that arrives.
+ *
+ * NOTE: `aggregate_type` and `event_type` are narrowed only in TypeScript
+ * via `$type<>()`; columns remain `text`, so raw SQL or non-TS producers
+ * can insert strings outside the union. Revisit with a Postgres enum or
+ * CHECK constraint if non-TS producers arrive or exhaustive pattern-
+ * matching becomes load-bearing.
+ * TODO: audit other `$type<>()` usages in schema (e.g. `mail.ts`);
+ * consolidate the enum-enforce decision on the second caller.
  */
 export const domainEvents = pgTable(
   "domain_events",
@@ -24,7 +34,7 @@ export const domainEvents = pgTable(
      * The kind of thing this event is about, e.g. `"message"` or `"mailbox"`.
      * Paired with `aggregateId` to identify the specific domain object.
      */
-    aggregateType: text("aggregate_type").notNull(),
+    aggregateType: text("aggregate_type").$type<DomainAggregateType>().notNull(),
     /**
      * ID of the specific `aggregateType` instance
      * (e.g., `messages.id` when `aggregateType = "message"`).
@@ -34,7 +44,7 @@ export const domainEvents = pgTable(
      * What happened, as a dotted verb-shaped string:
      * `"message.synced"`, `"tag.applied"`. Consumers branch on this.
      */
-    eventType: text("event_type").notNull(),
+    eventType: text("event_type").$type<DomainEventType>().notNull(),
     /** Optional event-type-specific extra data; kept small by convention. */
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
     /** When the event was recorded. Consumers process in this order. */

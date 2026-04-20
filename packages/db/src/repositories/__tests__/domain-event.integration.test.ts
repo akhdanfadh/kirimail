@@ -38,7 +38,7 @@ beforeEach(async () => {
   await db.delete(domainEvents);
 });
 
-function buildInput(overrides?: Partial<InsertDomainEventInput>) {
+function buildInput(overrides?: Partial<InsertDomainEventInput>): InsertDomainEventInput {
   return {
     aggregateType: "message",
     aggregateId: "msg-abc",

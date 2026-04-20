@@ -8,12 +8,12 @@ import {
   createTestMailbox,
   createTestUser,
 } from "#test/helpers";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type * as schema from "../../schema";
 
-import { mailboxes, messages } from "../../schema";
+import { domainEvents, mailboxes, messages } from "../../schema";
 import { applyMailboxSync, reconcileMailboxes } from "../mailbox";
 
 type Db = NodePgDatabase<typeof schema>;
@@ -41,6 +41,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await db.delete(domainEvents);
   await db.delete(messages);
   await db.delete(mailboxes);
 
@@ -434,6 +435,171 @@ describe("applyMailboxSync", () => {
     const rows = await db.select().from(messages).where(eq(messages.mailboxId, mailboxId));
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.uidValidity === 200)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyMailboxSync - domain event emission
+// ---------------------------------------------------------------------------
+
+describe("applyMailboxSync domain event emission", () => {
+  it("emits one message.synced event per newly-inserted message row", async () => {
+    // Pins the producer-side one-to-one contract. Every new message
+    // row must land with exactly one matching domain_events row in the
+    // same transaction, so downstream consumers cannot miss a message.
+    const synced = [
+      buildFetchedMessage({ uid: 1, subject: "First" }),
+      buildFetchedMessage({ uid: 2, subject: "Second" }),
+      buildFetchedMessage({ uid: 3, subject: "Third" }),
+    ];
+
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      synced,
+      { ...baseCursor, uidNext: 4, messageCount: 3 },
+      null,
+      null,
+    );
+
+    const insertedMessages = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.mailboxId, mailboxId));
+    const events = await db.select().from(domainEvents);
+
+    expect(events).toHaveLength(3);
+    expect(new Set(events.map((e) => e.aggregateId))).toEqual(
+      new Set(insertedMessages.map((r) => r.id)),
+    );
+    for (const event of events) {
+      expect(event.aggregateType).toBe("message");
+      expect(event.eventType).toBe("message.synced");
+      expect(event.payload).toEqual({});
+    }
+  });
+
+  it("emits zero events on a re-sync that inserts zero rows", async () => {
+    // Idempotence: onConflictDoNothing returns an empty RETURNING set
+    // for duplicate UIDs, so a no-op re-sync must not flood domain_events.
+    // A regression here would re-index the whole mailbox every tick.
+    const synced = [buildFetchedMessage({ uid: 1 }), buildFetchedMessage({ uid: 2 })];
+    const cursor = { ...baseCursor, uidNext: 3, messageCount: 2 };
+
+    await applyMailboxSync(db, mailboxId, synced, cursor, null, null);
+    const firstCount = (await db.select().from(domainEvents)).length;
+    expect(firstCount).toBe(2);
+
+    await applyMailboxSync(db, mailboxId, synced, cursor, null, null);
+    const secondCount = (await db.select().from(domainEvents)).length;
+    expect(secondCount).toBe(firstCount);
+  });
+
+  it("rolls back the message insert when the event insert fails mid-transaction", async () => {
+    // Atomic-pair proof: a transient CHECK constraint forces the event
+    // insert to fail after the message insert has staged rows, so the
+    // messages row must roll back with it. A regression that pulls event
+    // emission out of the tx would leave orphan message rows.
+    //
+    // Don't "simplify" this with a test-owned outer tx - `applyMailboxSync`
+    // opens its own tx, which would downgrade to a savepoint and mask the
+    // rollback signal we're trying to observe.
+    await db.execute(
+      sql`ALTER TABLE domain_events ADD CONSTRAINT tmp_fail_message_synced CHECK (event_type <> 'message.synced')`,
+    );
+    try {
+      await expect(
+        applyMailboxSync(
+          db,
+          mailboxId,
+          [buildFetchedMessage({ uid: 1 })],
+          { ...baseCursor, uidNext: 2, messageCount: 1 },
+          null,
+          null,
+        ),
+        // Matches the Drizzle error wrapping the CHECK-constraint failure on
+        // the domain_events insert - proves the throw came from event-side,
+        // not from a message-side regression.
+      ).rejects.toThrow(/domain_events/);
+
+      const messageRows = await db.select().from(messages).where(eq(messages.mailboxId, mailboxId));
+      const eventRows = await db.select().from(domainEvents);
+      expect(messageRows).toHaveLength(0);
+      expect(eventRows).toHaveLength(0);
+    } finally {
+      await db.execute(sql`ALTER TABLE domain_events DROP CONSTRAINT tmp_fail_message_synced`);
+    }
+  });
+
+  it("emits events only for newly-inserted rows when the batch mixes new and existing UIDs", async () => {
+    // The boundary case Tests 1 and 2 leave open: onConflictDoNothing skips
+    // some rows and inserts others. A regression that emitted per
+    // fetchedMessage instead of per inserted row would pass the all-new
+    // and all-existing tests but flood the table here.
+    const initial = [buildFetchedMessage({ uid: 1 }), buildFetchedMessage({ uid: 2 })];
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      initial,
+      { ...baseCursor, uidNext: 3, messageCount: 2 },
+      null,
+      null,
+    );
+
+    const mixed = [
+      buildFetchedMessage({ uid: 1 }), // existing
+      buildFetchedMessage({ uid: 2 }), // existing
+      buildFetchedMessage({ uid: 3 }), // new
+    ];
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      mixed,
+      { ...baseCursor, uidNext: 4, messageCount: 3 },
+      null,
+      null,
+    );
+
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(3); // 2 from initial + 1 from mixed
+  });
+
+  it("emits no events for UIDVALIDITY-purge or incremental-delete paths", async () => {
+    // Pins the producer's stated intent that deletions don't emit. A
+    // future contributor wiring message.deleted emission could accidentally
+    // attach it to the UIDVALIDITY-purge path (which represents server-side
+    // reset, not user-visible deletion) - this test catches that.
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      [buildFetchedMessage({ uid: 1 })],
+      { ...baseCursor, uidNext: 2, messageCount: 1 },
+      null,
+      null,
+    );
+    await db.delete(domainEvents); // reset the emit-on-insert noise from seeding
+
+    // Incremental delete: server reports empty UID set.
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      [],
+      { ...baseCursor, uidNext: 2, messageCount: 0 },
+      [],
+      null,
+    );
+    expect(await db.select().from(domainEvents)).toHaveLength(0);
+
+    // UIDVALIDITY purge: old rows wiped, no new fetch.
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      [],
+      { ...baseCursor, uidValidity: 999, uidNext: 1, messageCount: 0 },
+      null,
+      baseCursor.uidValidity,
+    );
+    expect(await db.select().from(domainEvents)).toHaveLength(0);
   });
 });
 

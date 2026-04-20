@@ -11,6 +11,7 @@
  * Tenant scoping happens at the API layer.
  */
 
+import type { DomainAggregateType, DomainEventType } from "@kirimail/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import { and, eq, isNull, or, sql } from "drizzle-orm";
@@ -33,9 +34,9 @@ function truncateErrorMessage(msg: string): string {
 
 /** Input accepted by {@link insertDomainEvent} and {@link insertDomainEvents}. */
 export interface InsertDomainEventInput {
-  aggregateType: string;
+  aggregateType: DomainAggregateType;
   aggregateId: string;
-  eventType: string;
+  eventType: DomainEventType;
   /** Optional extra data. Defaults to `{}` at the schema layer. */
   payload?: Record<string, unknown>;
 }
@@ -67,6 +68,12 @@ export async function insertDomainEvents(db: Db, inputs: InsertDomainEventInput[
  *
  * Secondary sort on `id` pins ordering deterministically when two
  * events share the same `created_at` microsecond.
+ *
+ * NOTE: the `id` tiebreak is deterministic, not causal. `id` is a random
+ * nanoid, so ties sort in nanoid order, not insertion order. Fine for
+ * idempotent consumers (pagination stability is all they need). Revisit
+ * with a time-sortable id (ULID, etc.) if a consumer needs causal order
+ * within one batch.
  *
  * NOTE: No `FOR UPDATE SKIP LOCKED`. Exclusivity is delegated to
  * pg-boss via `singletonKey=consumerName, teamSize=1` - at most one
@@ -111,6 +118,11 @@ export async function listUnconsumedDomainEvents(db: Db, consumerName: string, b
  * Upsert: no row exists until the first processing attempt lands.
  * Clears `lastError` and bumps `attempts` on both the insert and update
  * paths so a success after prior failures ends with a correct attempt count.
+ *
+ * No `where` guard on the UPDATE: success is terminal, so a retry that
+ * succeeds after a prior failure always stamps `lastConsumedAt` and
+ * clears `lastError`. Asymmetric with {@link markDomainEventFailed}'s
+ * guarded update - "success wins" is the at-least-once contract.
  */
 export async function markDomainEventConsumed(db: Db, eventId: string, consumerName: string) {
   const now = new Date();

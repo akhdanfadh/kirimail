@@ -4,9 +4,11 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import { and, eq, notInArray } from "drizzle-orm";
 
 import type * as schema from "../schema";
+import type { InsertDomainEventInput } from "./domain-event";
 
 import { generateId } from "../id";
 import { mailboxes, messages } from "../schema";
+import { insertDomainEvents } from "./domain-event";
 
 type Db = NodePgDatabase<typeof schema>;
 
@@ -38,8 +40,10 @@ export interface ApplyMailboxSyncResult {
 }
 
 /**
- * Apply mailbox sync results to the database: delete stale messages,
- * insert new messages, and update the mailbox cursor.
+ * Apply mailbox sync results in a single transaction: delete messages the
+ * server removed, insert new messages, emit one `message.synced` event per
+ * newly-inserted message, and update the mailbox cursor. A repeat sync of
+ * already-stored messages emits nothing; deletes emit nothing either.
  *
  * @param db - Drizzle database instance.
  * @param mailboxId - ID of the mailbox row to sync into.
@@ -64,6 +68,11 @@ export async function applyMailboxSync(
   return db.transaction(async (tx) => {
     let messagesCreated = 0;
     let messagesDeleted = 0;
+
+    // NOTE: delete paths below don't emit events. Search/index consumers
+    // will show stale docs until the next reindex reconciles drift. Add
+    // `message.deleted` and emit here if real-time delete consistency
+    // becomes load-bearing.
 
     // 1. UIDVALIDITY change: purge all rows with old uidValidity
     if (oldUidValidity != null && oldUidValidity !== serverCursor.uidValidity) {
@@ -114,6 +123,10 @@ export async function applyMailboxSync(
         sizeOctets: msg.sizeOctets,
       }));
 
+      // NOTE: onConflictDoNothing drops flag changes on already-stored rows
+      // (e.g. a message newly marked \Seen). Unblock by switching to
+      // onConflictDoUpdate on flags + a `message.flags-changed` event type,
+      // once a consumer needs flag fidelity (search facets, rules engine).
       const inserted = await tx
         .insert(messages)
         .values(rows)
@@ -122,6 +135,15 @@ export async function applyMailboxSync(
         })
         .returning({ id: messages.id });
       messagesCreated = inserted.length;
+
+      // Payload omitted - schema default fills `{}`. `inserted` is empty on
+      // re-syncs (onConflictDoNothing) and insertDomainEvents short-circuits.
+      const events: InsertDomainEventInput[] = inserted.map((row) => ({
+        aggregateType: "message",
+        aggregateId: row.id,
+        eventType: "message.synced",
+      }));
+      await insertDomainEvents(tx, events);
     }
 
     // 4. Always update mailbox cursor (even for empty syncs / noop)
