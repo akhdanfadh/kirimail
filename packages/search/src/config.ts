@@ -2,14 +2,13 @@ import type { Meilisearch, Settings } from "meilisearch";
 
 import type { AttachmentMeta, MessageDoc } from "./types";
 
-/** Wait window for index/settings tasks during startup. */
-const STARTUP_TASK_TIMEOUT_MS = 30_000;
+import { awaitTaskOrThrow } from "./tasks";
 
 /** Locked primary key for every document in {@link MESSAGES_INDEX_UID}. */
 const PRIMARY_KEY = "id";
 
 /** Index uid that holds one document per `messages.id`. */
-const MESSAGES_INDEX_UID = "messages";
+export const MESSAGES_INDEX_UID = "messages";
 
 /**
  * Field paths Meilisearch is allowed to index in any role
@@ -64,12 +63,12 @@ export async function ensureMeilisearchConfig(
   client: Meilisearch,
   indexUid: string = MESSAGES_INDEX_UID,
 ): Promise<void> {
-  const createTask = await client
-    .createIndex(indexUid, { primaryKey: PRIMARY_KEY })
-    .waitTask({ timeout: STARTUP_TASK_TIMEOUT_MS });
-  if (createTask.status === "succeeded") {
-    // Fresh index - createIndex stamped the primary key, no further check needed.
-  } else if (createTask.status === "failed" && createTask.error?.code === "index_already_exists") {
+  const createTask = await awaitTaskOrThrow(
+    "createIndex",
+    client.createIndex(indexUid, { primaryKey: PRIMARY_KEY }),
+    { toleratedErrorCodes: ["index_already_exists"] },
+  );
+  if (createTask.status === "failed") {
     // Pre-existing index - verify its primary key matches what we lock here.
     // Catches bad migrations, manual tinkering, and operator restores from
     // a Meilisearch snapshot configured with a different key.
@@ -79,21 +78,12 @@ export async function ensureMeilisearchConfig(
         `[search] index "${indexUid}" expected primaryKey="${PRIMARY_KEY}", got ${info.primaryKey ?? "<unset>"}`,
       );
     }
-  } else {
-    throw new Error(
-      `[search] createIndex unexpected outcome: status=${createTask.status}, error=${createTask.error?.code ?? "none"}`,
-    );
   }
 
-  const settingsTask = await client
-    .index(indexUid)
-    .updateSettings(MESSAGES_INDEX_SETTINGS)
-    .waitTask({ timeout: STARTUP_TASK_TIMEOUT_MS });
-  if (settingsTask.status !== "succeeded") {
-    throw new Error(
-      `[search] updateSettings unexpected outcome: status=${settingsTask.status}, error=${settingsTask.error?.code ?? "none"}`,
-    );
-  }
+  await awaitTaskOrThrow(
+    "updateSettings",
+    client.index(indexUid).updateSettings(MESSAGES_INDEX_SETTINGS),
+  );
 
   // NOTE: replace with structured logging once introduced.
   console.log(`[search] Meilisearch config ensured (index="${indexUid}")`);

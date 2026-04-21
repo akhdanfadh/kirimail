@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { searchClient } from "../client";
 import { ensureMeilisearchConfig } from "../config";
+import { awaitTaskOrThrow } from "../tasks";
 import { TEST_INDEX_UID } from "./helpers";
 
 describe("ensureMeilisearchConfig", () => {
@@ -42,10 +43,10 @@ describe("ensureMeilisearchConfig", () => {
     // ensureMeilisearchConfig must re-apply settings even when the index
     // already exists - guards against a future "skip if configured"
     // optimization that would silently let prod settings drift.
-    await searchClient
-      .index(TEST_INDEX_UID)
-      .updateSettings({ sortableAttributes: ["sizeBytes"] })
-      .waitTask();
+    await awaitTaskOrThrow(
+      "drift-bait updateSettings",
+      searchClient.index(TEST_INDEX_UID).updateSettings({ sortableAttributes: ["sizeBytes"] }),
+    );
 
     await ensureMeilisearchConfig(searchClient, TEST_INDEX_UID);
 
@@ -58,7 +59,10 @@ describe("ensureMeilisearchConfig", () => {
     // (config.ts's defensive guard for bad migrations or operator-restored
     // snapshots configured with a different key).
     const foreignUid = `${TEST_INDEX_UID}_foreign`;
-    await searchClient.createIndex(foreignUid, { primaryKey: "uid" }).waitTask();
+    await awaitTaskOrThrow(
+      "seed foreign createIndex",
+      searchClient.createIndex(foreignUid, { primaryKey: "uid" }),
+    );
 
     await expect(ensureMeilisearchConfig(searchClient, foreignUid)).rejects.toThrow(
       /primaryKey="id", got uid/,
