@@ -24,7 +24,7 @@ let container: StartedTestContainer;
  * racing across files.
  */
 export async function setup(project: TestProject) {
-  container = await new GenericContainer("postgres:18-alpine")
+  container = await new GenericContainer("postgres:18")
     .withExposedPorts(5432)
     .withEnvironment({
       POSTGRES_DB: "kirimail_test",
@@ -32,7 +32,7 @@ export async function setup(project: TestProject) {
       POSTGRES_PASSWORD: "test",
     })
     .withHealthCheck({
-      test: ["CMD-SHELL", "pg_isready -U test"],
+      test: ["CMD-SHELL", "pg_isready -U test -h localhost"],
       interval: 500,
       timeout: 3_000,
       retries: 60,

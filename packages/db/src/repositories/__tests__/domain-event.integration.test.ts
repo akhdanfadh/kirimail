@@ -2,7 +2,7 @@ import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 
 import { createTestDb } from "#test/helpers";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type * as schema from "../../schema";
@@ -189,8 +189,15 @@ describe("domain-event repository", () => {
       // them in id-sorted order regardless of insertion order.
       const id1 = generateId();
       const id2 = generateId();
-      const smallerId = id1 < id2 ? id1 : id2;
-      const largerId = id1 < id2 ? id2 : id1;
+      // Use the database's own collation to determine order, not JS string comparison.
+      // JS `<` uses code-point order; PostgreSQL's collation may differ (e.g. en_US.utf8
+      // treats upper and lowercase as the same letter for primary sort).
+      const { rows } = await db.execute<{ id1_first: boolean }>(
+        sql`SELECT (${id1} < ${id2}) AS id1_first`,
+      );
+      const id1First = rows[0]!.id1_first;
+      const smallerId = id1First ? id1 : id2;
+      const largerId = id1First ? id2 : id1;
       const tiedTimestamp = new Date("2025-06-01T00:00:00.000Z");
 
       await db.insert(domainEvents).values([
