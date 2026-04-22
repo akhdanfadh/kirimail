@@ -1,6 +1,8 @@
+import type Mail from "nodemailer/lib/mailer";
 import type { StartedTestContainer } from "testcontainers";
 import type { TestProject } from "vitest/node";
 
+import MailComposer from "nodemailer/lib/mail-composer";
 import { GenericContainer, Wait } from "testcontainers";
 import { inject } from "vitest";
 
@@ -159,6 +161,19 @@ export interface SeedMessageOptions {
   headers?: SeedMessageHeaders;
   /** Plain text body. Defaults to "Test message body." */
   text?: string;
+  /**
+   * HTML body. When set, the seeded message is built with MailComposer and
+   * produces a multipart structure (multipart/alternative when combined with
+   * `text`, or multipart/related when combined with cid-bearing attachments).
+   */
+  html?: string;
+  /**
+   * File attachments passed through to MailComposer. Inline images use
+   * `{cid, content, contentType: "image/..."}`; forwarded messages use
+   * `{contentType: "message/rfc822", content: <raw RFC 5322 Buffer>}`.
+   * Presence of this field (or `html`) switches the builder to MailComposer.
+   */
+  attachments?: Mail.Attachment[];
   /** Target mailbox for APPEND. Defaults to "INBOX". */
   mailbox?: string;
   /** IMAP flags to set on the message (e.g., "\\Seen", "\\Flagged"). */
@@ -168,13 +183,34 @@ export interface SeedMessageOptions {
 }
 
 /**
- * Build a minimal RFC 5322 message as raw bytes.
- *
- * IMAP APPEND requires a fully formed email (headers + body) unlike SMTP where
- * the transport library constructs the message for you.
+ * Build a raw RFC 5322 message for APPEND. Uses MailComposer when the
+ * message needs MIME structure (html body or attachments), falls back to
+ * hand-rolled single-part text/plain for the simple case.
  */
-function buildRawMessage(options: SeedMessageOptions): Buffer {
+async function buildRawMessage(options: SeedMessageOptions): Promise<Buffer> {
   const h = options.headers ?? {};
+  const isMultipart =
+    options.html != null || (options.attachments && options.attachments.length > 0);
+
+  if (isMultipart) {
+    // `date` here is the RFC 5322 Date: header inside the message body;
+    // `options.internalDate` is the IMAP APPEND timestamp (server-receive
+    // time), threaded separately through `client.append` in `seedMessage`.
+    const composer = new MailComposer({
+      from: h.from ?? "sender@localhost",
+      to: h.to ?? "user@localhost",
+      date: h.date ?? new Date(),
+      messageId: h.messageId,
+      subject: h.subject,
+      inReplyTo: h.inReplyTo,
+      references: h.references,
+      text: options.text ?? "Test message body.",
+      html: options.html,
+      attachments: options.attachments,
+    });
+    return await composer.compile().build();
+  }
+
   const lines = [
     `From: ${h.from ?? "sender@localhost"}`,
     `To: ${h.to ?? "user@localhost"}`,
@@ -214,7 +250,7 @@ export async function seedMessage(creds: ImapCredentials, options?: SeedMessageO
     ...options,
     headers: { ...defaultHeaders, ...options?.headers },
   };
-  const raw = buildRawMessage(merged);
+  const raw = await buildRawMessage(merged);
   const mailbox = options?.mailbox ?? "INBOX";
   const flags = options?.flags ?? [];
   await withImapConnection(creds, async (client) => {

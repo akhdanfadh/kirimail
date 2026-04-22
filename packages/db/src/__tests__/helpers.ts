@@ -1,4 +1,4 @@
-import type { FetchedMessage } from "@kirimail/shared";
+import type { AttachmentMetadata, FetchedMessage } from "@kirimail/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -117,6 +117,7 @@ export function buildFetchedMessage(overrides?: {
   flags?: Set<string>;
   internalDate?: Date;
   sizeOctets?: number;
+  attachments?: AttachmentMetadata[];
 }): FetchedMessage {
   const uid = overrides?.uid ?? uidCounter++;
   return {
@@ -138,5 +139,6 @@ export function buildFetchedMessage(overrides?: {
     flags: overrides?.flags ?? new Set(),
     internalDate: overrides?.internalDate ?? new Date(),
     sizeOctets: overrides?.sizeOctets ?? 1024,
+    attachments: overrides?.attachments ?? [],
   };
 }

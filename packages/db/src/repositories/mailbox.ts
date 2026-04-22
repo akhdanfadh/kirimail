@@ -119,6 +119,7 @@ export async function applyMailboxSync(
         ccAddress: msg.envelope.cc,
         bccAddress: msg.envelope.bcc,
         flags: [...msg.flags],
+        attachments: msg.attachments,
         internalDate: msg.internalDate,
         sizeOctets: msg.sizeOctets,
       }));

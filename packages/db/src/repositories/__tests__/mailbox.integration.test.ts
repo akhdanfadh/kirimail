@@ -103,6 +103,59 @@ describe("applyMailboxSync", () => {
     expect(mbx!.highestModseq).toBe(cursor.highestModseq);
   });
 
+  it("round-trips attachments metadata on insert", async () => {
+    // Shape covers each field's value space: non-null filename vs null,
+    // known vs null size, populated vs null contentId, all three
+    // disposition tokens, and a descendant partPath for a forward-nested
+    // entry. jsonb must preserve everything verbatim.
+    const attachments = [
+      {
+        filename: "report.pdf",
+        mimeType: "application/pdf",
+        size: 54321,
+        contentId: null,
+        disposition: "attachment" as const,
+        partPath: "2",
+      },
+      {
+        filename: "logo.png",
+        mimeType: "image/png",
+        size: 9876,
+        contentId: "logo@example.com",
+        disposition: "inline" as const,
+        partPath: "3",
+      },
+      {
+        filename: null,
+        mimeType: "application/octet-stream",
+        size: null,
+        contentId: null,
+        disposition: null,
+        partPath: "4.2",
+      },
+    ];
+    const synced = [
+      buildFetchedMessage({ uid: 10, subject: "With attachments", attachments }),
+      buildFetchedMessage({ uid: 11, subject: "No attachments" }),
+    ];
+
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      synced,
+      { ...baseCursor, uidNext: 12, messageCount: 2 },
+      null,
+      null,
+    );
+
+    const rows = await db.select().from(messages).where(eq(messages.mailboxId, mailboxId));
+    const withAttachments = rows.find((r) => r.subject === "With attachments");
+    const withoutAttachments = rows.find((r) => r.subject === "No attachments");
+
+    expect(withAttachments!.attachments).toEqual(attachments);
+    expect(withoutAttachments!.attachments).toEqual([]);
+  });
+
   it("is idempotent when re-applied with the same data", async () => {
     const synced = [buildFetchedMessage({ uid: 1 }), buildFetchedMessage({ uid: 2 })];
     const cursor = { ...baseCursor, uidNext: 3, messageCount: 2 };
@@ -787,7 +840,7 @@ describe("reconcileMailboxes", () => {
       null,
     );
 
-    // Re-discover without Trash → mailbox + messages removed
+    // Re-discover without Trash -> mailbox + messages removed
     await reconcileMailboxes(db, accountId, []);
 
     const msgRows = await db.select().from(messages).where(eq(messages.mailboxId, trashId));
@@ -874,7 +927,7 @@ describe("reconcileMailboxes", () => {
   });
 
   it("clears parentId when child is promoted to root", async () => {
-    // Create parent → child hierarchy
+    // Create parent -> child hierarchy
     await reconcileMailboxes(db, accountId, [
       {
         path: "Work",
@@ -996,7 +1049,7 @@ describe("reconcileMailboxes", () => {
       null,
     );
 
-    // Server renamed INBOX → Primary. Old path gone, new path appeared.
+    // Server renamed INBOX -> Primary. Old path gone, new path appeared.
     // Known limitation (see TODO in reconcileMailboxes): identity is keyed
     // on path, so this looks like a deletion + a new mailbox.
     const result = await reconcileMailboxes(db, accountId, [
@@ -1017,7 +1070,7 @@ describe("reconcileMailboxes", () => {
     const msgRows = await db.select().from(messages).where(eq(messages.mailboxId, mailboxId));
     expect(msgRows).toHaveLength(0);
 
-    // New mailbox starts with null cursor → full initial resync
+    // New mailbox starts with null cursor -> full initial resync
     const primary = result.mailboxByPath.get("Primary")!;
     expect(primary.storedCursor).toBeNull();
   });

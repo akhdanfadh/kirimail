@@ -1,5 +1,6 @@
 import type { SyncCursor } from "@kirimail/shared";
 
+import { isDescendantPart } from "@kirimail/shared";
 import { describe, expect, it } from "vitest";
 
 import type { SyncMailboxesOptions, SyncMailboxResult } from "../sync";
@@ -355,6 +356,90 @@ describe("syncMailboxes", () => {
     expect(b.messages).toHaveLength(1);
     expect(b.messages[0]!.envelope.subject).toBe("B-1");
     expect(b.cursor.messageCount).toBe(1);
+  });
+
+  it("captures attachment metadata from BODYSTRUCTURE", async () => {
+    await withImapConnection(creds(), (client) => client.mailboxCreate("AttachTest"));
+
+    // Build the forwarded inner message as raw RFC 5322 bytes so MailComposer
+    // embeds it as a message/rfc822 attachment (the inner PDF will be visible
+    // to the BODYSTRUCTURE walker via rfc822 recursion, with its partPath
+    // reflecting nesting under the wrapper).
+    const innerForward = Buffer.from(
+      [
+        "From: inner-sender@localhost",
+        "To: inner-recipient@localhost",
+        "Message-ID: <inner-forward-001@test.localhost>",
+        "Subject: Forwarded original",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/mixed; boundary="inner-bdy"',
+        "",
+        "--inner-bdy",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Inner body text.",
+        "--inner-bdy",
+        'Content-Type: application/pdf; name="inside.pdf"',
+        'Content-Disposition: attachment; filename="inside.pdf"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        Buffer.from("fake-pdf-bytes").toString("base64"),
+        "--inner-bdy--",
+        "",
+      ].join("\r\n"),
+    );
+
+    await seedMessage(creds(), {
+      headers: { subject: "Attachments fixture" },
+      mailbox: "AttachTest",
+      text: "Body text.",
+      html: '<p>Hello <img src="cid:logo@example.com" /></p>',
+      attachments: [
+        {
+          filename: "report.pdf",
+          content: Buffer.from("pdf-bytes"),
+          contentType: "application/pdf",
+        },
+        {
+          filename: "logo.png",
+          content: Buffer.from("png-bytes"),
+          contentType: "image/png",
+          cid: "logo@example.com",
+        },
+        {
+          filename: "forward.eml",
+          content: innerForward,
+          contentType: "message/rfc822",
+        },
+      ],
+    });
+
+    const result = await syncOne("AttachTest", null);
+    expect(result.messages).toHaveLength(1);
+    const { attachments } = result.messages[0]!;
+
+    // Four leaves: PDF + inline PNG + rfc822 wrapper + inner PDF
+    // recursed from the wrapper. Catches imapflow ever changing how
+    // it walks rfc822 subtrees, or the parser ever skipping the
+    // wrapper's children.
+    expect(attachments).toHaveLength(4);
+
+    // Content-ID round-trips end-to-end through IMAP BODYSTRUCTURE -
+    // proves the bracket-stripper handles what imapflow actually emits,
+    // not just synthetic fixtures.
+    const inlineLogo = attachments.find((a) => a.mimeType === "image/png");
+    expect(inlineLogo?.contentId).toBe("logo@example.com");
+
+    // partPath uses real IMAP dot-notation (shape pinned, exact
+    // numbering left to MailComposer) and nested leaves sit under
+    // their rfc822 wrapper. This is the one property no synthetic
+    // fixture can assert.
+    const pdf = attachments.find((a) => a.filename === "report.pdf")!;
+    expect(pdf.partPath).toMatch(/^\d+(\.\d+)*$/);
+
+    const wrapper = attachments.find((a) => a.mimeType === "message/rfc822")!;
+    const innerPdf = attachments.find((a) => a.filename === "inside.pdf")!;
+    expect(isDescendantPart(innerPdf.partPath, wrapper.partPath)).toBe(true);
   });
 
   it("skips nonexistent mailbox and continues syncing remaining mailboxes", async () => {

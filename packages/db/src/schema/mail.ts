@@ -1,4 +1,4 @@
-import type { MessageAddress, SmtpErrorCategory } from "@kirimail/shared";
+import type { AttachmentMetadata, MessageAddress, SmtpErrorCategory } from "@kirimail/shared";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
 import { sql } from "drizzle-orm";
@@ -127,6 +127,7 @@ export const messages = pgTable(
 
     // Per-copy IMAP metadata
     flags: jsonb("flags").$type<string[]>().notNull().default([]),
+    attachments: jsonb("attachments").$type<AttachmentMetadata[]>().notNull().default([]),
     internalDate: timestamp("internal_date", { withTimezone: true }).notNull(),
     sizeOctets: integer("size_octets").notNull().default(0),
 

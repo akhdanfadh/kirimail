@@ -74,7 +74,16 @@ describe("indexing primitives", () => {
     await upsertMessageAttachments(
       searchClient,
       header.id,
-      [{ filename: "a.txt", mimeType: "text/plain", size: 10 }],
+      [
+        {
+          filename: "a.txt",
+          mimeType: "text/plain",
+          size: 10,
+          contentId: null,
+          disposition: "attachment",
+          partPath: "2",
+        },
+      ],
       TEST_INDEX_UID,
     );
 
@@ -91,7 +100,16 @@ describe("indexing primitives", () => {
     await upsertMessageAttachments(
       searchClient,
       header.id,
-      [{ filename: "a.pdf", mimeType: "application/pdf", size: 100 }],
+      [
+        {
+          filename: "a.pdf",
+          mimeType: "application/pdf",
+          size: 100,
+          contentId: null,
+          disposition: "attachment",
+          partPath: "2",
+        },
+      ],
       TEST_INDEX_UID,
     );
     await upsertMessageBody(
@@ -151,7 +169,16 @@ describe("indexing primitives", () => {
     await upsertMessageAttachments(
       searchClient,
       header.id,
-      [{ filename: "first.pdf", mimeType: "application/pdf", size: 100 }],
+      [
+        {
+          filename: "first.pdf",
+          mimeType: "application/pdf",
+          size: 100,
+          contentId: null,
+          disposition: "attachment",
+          partPath: "2",
+        },
+      ],
       TEST_INDEX_UID,
     );
 

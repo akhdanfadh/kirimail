@@ -4,6 +4,7 @@ import type { ImapFlow, MessageAddressObject } from "imapflow";
 import type { ImapCredentials } from "./connection";
 
 import { withImapConnection } from "./connection";
+import { parseAttachments } from "./parser";
 
 // ---------------------------------------------------------------------------
 // Types and interfaces
@@ -240,6 +241,7 @@ async function fetchMessages(
     {
       uid: true,
       envelope: true,
+      bodyStructure: true,
       flags: true,
       internalDate: true,
       size: true,
@@ -266,6 +268,7 @@ async function fetchMessages(
       internalDate:
         msg.internalDate instanceof Date ? msg.internalDate : new Date(msg.internalDate as string),
       sizeOctets: msg.size ?? 0,
+      attachments: parseAttachments(msg.bodyStructure),
     });
   }
 
