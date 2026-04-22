@@ -19,7 +19,7 @@ const databaseUrl = process.env.DATABASE_URL?.trim();
 // container deployment. Post-v1, commit to Option 3 entirely.
 // @see: https://orm.drizzle.team/docs/migrations
 export default defineConfig({
-  schema: "./src/schema",
+  schema: "./src/schema/index.ts",
   dialect: "postgresql",
   out: "./drizzle",
   // NOTE: Pre-v1 only. dbCredentials is conditional because drizzle-kit
