@@ -12,6 +12,7 @@
  */
 
 import { pool } from "@kirimail/db";
+import { ensureMeilisearchConfig, searchClient } from "@kirimail/search";
 import { createStartHandler, defaultStreamHandler } from "@tanstack/react-start/server";
 import { createServerEntry } from "@tanstack/react-start/server-entry";
 
@@ -38,27 +39,46 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
   });
 }
 
-// Our custom startup hook, gated by START_WORKERS_IN_PROCESS env.
+// Search infra is awaited at the module top level to fail-fast on
+// misconfiguration (bad env, wrong primary key, auth error) - those don't
+// self-heal, so crash at boot instead of surfacing as 5xx on first query.
+try {
+  await ensureMeilisearchConfig(searchClient);
+} catch (err) {
+  if (!shuttingDown) {
+    shuttingDown = true;
+    console.error("[server] startup failed:", err);
+    await pool.end().catch(console.error);
+    process.exit(1);
+  } else {
+    // Signal handler owns cleanup; still log so a real misconfig isn't masked.
+    console.error("[server] startup failed during shutdown:", err);
+  }
+}
+
+// Workers boot in the background so the fetch export doesn't wait on
+// IdlePool.startAll() (one IMAP handshake per active account - can stretch
+// past readiness-probe grace on large account sets). Partial worker
+// availability while web serves is acceptable: background processing just
+// starts slightly late.
 //
-// When "false", workers are not loaded and the web server runs standalone.
-// Dynamic import avoids executing worker module code (pg-boss init,
-// queue registration, worker env validation) when disabled.
-if (webEnv.START_WORKERS_IN_PROCESS) {
-  import("@kirimail/workers").then(({ startWorkers }) =>
-    startWorkers()
-      .then((handle) => {
-        stop = handle.stop;
-      })
-      .catch((err) => {
-        if (shuttingDown) return; // signal handler already owns cleanup
-        shuttingDown = true;
-        console.error("[workers] startup failed:", err);
-        pool
-          .end()
-          .catch(console.error)
-          .finally(() => process.exit(1));
-      }),
-  );
+// Dynamic import keeps its module code out of the standalone web path when false.
+// The !shuttingDown guard avoids booting workers if a signal raced startup.
+if (!shuttingDown && webEnv.START_WORKERS_IN_PROCESS) {
+  import("@kirimail/workers")
+    .then(({ startWorkers }) => startWorkers())
+    .then((handle) => {
+      stop = handle.stop;
+    })
+    .catch((err) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.error("[workers] startup failed:", err);
+      pool
+        .end()
+        .catch(console.error)
+        .finally(() => process.exit(1));
+    });
 }
 
 // TanStack Start server entry contract: export a { fetch } handler that

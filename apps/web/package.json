@@ -21,6 +21,7 @@
     "@kirimail/auth": "workspace:*",
     "@kirimail/db": "workspace:*",
     "@kirimail/env": "workspace:*",
+    "@kirimail/search": "workspace:*",
     "@kirimail/workers": "workspace:*",
     "@t3-oss/env-core": "^0.13.11",
     "@tailwindcss/vite": "^4.2.2",

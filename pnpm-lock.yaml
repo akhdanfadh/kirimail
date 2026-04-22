@@ -41,6 +41,9 @@ importers:
       '@kirimail/env':
         specifier: workspace:*
         version: link:../../packages/env
+      '@kirimail/search':
+        specifier: workspace:*
+        version: link:../../packages/search
       '@kirimail/workers':
         specifier: workspace:*
         version: link:../workers
@@ -135,6 +138,9 @@ importers:
       '@kirimail/mail':
         specifier: workspace:*
         version: link:../../packages/mail
+      '@kirimail/search':
+        specifier: workspace:*
+        version: link:../../packages/search
       '@t3-oss/env-core':
         specifier: ^0.13.11
         version: 0.13.11(typescript@6.0.2)(valibot@1.3.1(typescript@6.0.2))(zod@4.3.6)

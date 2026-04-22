@@ -8,6 +8,7 @@
  * healthchecks (port configurable via WORKER_HEALTH_PORT, default 3005).
  */
 import { pool } from "@kirimail/db";
+import { ensureMeilisearchConfig, searchClient } from "@kirimail/search";
 import { createServer } from "node:http";
 
 import { workerEnv } from "./env";
@@ -49,11 +50,15 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) {
 }
 
 try {
+  await ensureMeilisearchConfig(searchClient);
   ({ stop } = await startWorkers());
   ready = true;
 } catch (err) {
-  console.error("[workers] startup failed", err);
-  healthServer.close();
-  await pool.end().catch(console.error);
-  process.exit(1);
+  if (!shuttingDown) {
+    shuttingDown = true;
+    console.error("[workers] startup failed", err);
+    healthServer.close();
+    await pool.end().catch(console.error);
+    process.exit(1);
+  }
 }
