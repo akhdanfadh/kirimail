@@ -21,6 +21,7 @@ COPY packages/auth/package.json ./packages/auth/
 COPY packages/db/package.json ./packages/db/
 COPY packages/env/package.json ./packages/env/
 COPY packages/mail/package.json ./packages/mail/
+COPY packages/search/package.json ./packages/search/
 COPY packages/shared/package.json ./packages/shared/
 
 # --shamefully-hoist: flatten node_modules/ so the bundler finds all deps.

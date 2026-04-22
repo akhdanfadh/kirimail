@@ -23,6 +23,24 @@ services:
       retries: 5
       start_period: 10s
 
+  # Meilisearch index + body store. Production mode enforces a master key
+  # of at least 16 bytes; named volume keeps the index across `compose down`.
+  meilisearch:
+    image: getmeili/meilisearch:v1.42.1
+    restart: unless-stopped
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - meili_data:/meili_data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:7700/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # One-shot migration service: applies Drizzle SQL migrations then exits.
   # Separated from web/workers so migrations run exactly once (no race between
   # parallel containers) and a failed migration blocks all dependents cleanly.
@@ -46,10 +64,13 @@ services:
     env_file: .env
     environment: # override .env
       DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}
+      MEILISEARCH_URL: http://meilisearch:7700
       START_WORKERS_IN_PROCESS: "false"
     depends_on:
       migrate:
         condition: service_completed_successfully
+      meilisearch:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: "curl -f http://localhost:3000/api/v1/health"
@@ -64,9 +85,12 @@ services:
     env_file: .env
     environment: # override .env
       DATABASE_URL: postgresql://${POSTGRES_USER:-kirimailadmin}:${POSTGRES_PASSWORD:-kirimailpassword}@postgres:5432/${POSTGRES_DB:-kirimail}
+      MEILISEARCH_URL: http://meilisearch:7700
     depends_on:
       migrate:
         condition: service_completed_successfully
+      meilisearch:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: "curl -f http://localhost:3005/"
@@ -77,3 +101,4 @@ services:
 
 volumes:
   postgres_data:
+  meili_data:
