@@ -1,6 +1,7 @@
+import type { AttachmentMetadata } from "@kirimail/shared";
 import type { Meilisearch, Settings } from "meilisearch";
 
-import type { AttachmentMeta, MessageDoc } from "./types";
+import type { MessageDoc } from "./types";
 
 import { awaitTaskOrThrow } from "./tasks";
 
@@ -16,7 +17,7 @@ export const MESSAGES_INDEX_UID = "messages";
  * turns name drift between {@link MessageDoc} and the settings below
  * into a compile error.
  */
-type IndexableAttribute = keyof MessageDoc | `attachments.${keyof AttachmentMeta}`;
+type IndexableAttribute = keyof MessageDoc | `attachments.${keyof AttachmentMetadata}`;
 
 /** Index settings applied by {@link ensureMeilisearchConfig}. */
 const MESSAGES_INDEX_SETTINGS: Settings = {

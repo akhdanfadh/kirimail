@@ -1,8 +1,9 @@
+import type { AttachmentMetadata } from "@kirimail/shared";
 import type { Meilisearch } from "meilisearch";
 
 import { MeilisearchApiError } from "meilisearch";
 
-import type { AttachmentMeta, MessageDoc } from "./types";
+import type { MessageDoc } from "./types";
 
 import { MESSAGES_INDEX_UID } from "./config";
 import { awaitTaskOrThrow } from "./tasks";
@@ -48,7 +49,7 @@ export async function upsertMessageHeaders(
 export async function upsertMessageAttachments(
   client: Meilisearch,
   id: string,
-  attachments: AttachmentMeta[],
+  attachments: AttachmentMetadata[],
   indexUid: string = MESSAGES_INDEX_UID,
 ): Promise<void> {
   await awaitTaskOrThrow(

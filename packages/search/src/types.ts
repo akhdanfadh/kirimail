@@ -1,3 +1,5 @@
+import type { AttachmentMetadata } from "@kirimail/shared";
+
 /**
  * Single Meilisearch document representing one synced message.
  *
@@ -39,16 +41,8 @@ export interface MessageDoc {
   /** IMAP system and keyword flags (e.g. `\Seen`, `\Flagged`). */
   flags: string[];
 
-  attachments?: AttachmentMeta[];
+  attachments?: AttachmentMetadata[];
   bodyText?: string;
   /** Raw HTML - sanitization happens at render time, not at index time. */
   bodyHtml?: string;
-}
-
-/** One entry per attachment, embedded in {@link MessageDoc.attachments}. */
-export interface AttachmentMeta {
-  /** `null` for inline parts without a name. */
-  filename: string | null;
-  mimeType: string;
-  size: number;
 }

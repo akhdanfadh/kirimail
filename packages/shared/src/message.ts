@@ -62,6 +62,19 @@ export interface MessageEnvelope {
   messageId: string | null;
 }
 
+/**
+ * Metadata for a single attachment part of a message. One entry per MIME
+ * leaf that is not a body part; inline images embedded in HTML bodies are included.
+ */
+export interface AttachmentMetadata {
+  /** `null` when the part declares no filename via Content-Disposition or Content-Type. */
+  filename: string | null;
+  /** Lowercased `type/subtype` (e.g., `application/pdf`, `image/png`). */
+  mimeType: string;
+  /** Size in octets of the encoded part as reported by IMAP. */
+  size: number;
+}
+
 /** Message metadata fetched from IMAP FETCH (envelope + flags + size). */
 export interface FetchedMessage {
   /**
