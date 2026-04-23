@@ -232,7 +232,7 @@ export const outboundMessages = pgTable(
      */
     rawMime: bytea("raw_mime").notNull(),
     /**
-     * Angle-bracketed RFC 2822 Message-ID, stable across retries.
+     * Angle-bracketed RFC 5322 Message-ID, stable across retries.
      * Uniqueness is enforced per email account.
      */
     messageId: text("message_id").notNull(),

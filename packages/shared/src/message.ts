@@ -3,17 +3,17 @@
  *
  * IMAP returns addresses as a 4-tuple `(name adl mailbox host)`. imapflow
  * combines mailbox+host into a single `address` string and drops the obsolete
- * `adl` (source route, RFC 2822 #4.4) which is NIL in all modern mail.
+ * `adl` (source route, RFC 5322 #4.4) which is NIL in all modern mail.
  *
  * @see https://www.rfc-editor.org/rfc/rfc3501#section-7.4.2 - ENVELOPE address structure
- * @see https://www.rfc-editor.org/rfc/rfc2822#section-3.4 - Address specification
+ * @see https://www.rfc-editor.org/rfc/rfc5322#section-3.4 - Address specification
  */
 export interface MessageAddress {
   /** Display name (e.g., "John Doe"), RFC 2047-decoded by imapflow. Null if absent. */
   name: string | null;
   /**
    * Full email address (e.g., "john@example.com").
-   * Null for RFC 2822 group syntax sentinel entries where host is NIL.
+   * Null for RFC 5322 group syntax sentinel entries where host is NIL.
    */
   address: string | null;
 }
@@ -26,14 +26,14 @@ export interface MessageAddress {
  * parses the raw ENVELOPE data before we see it.
  *
  * @see https://www.rfc-editor.org/rfc/rfc3501#section-7.4.2 - ENVELOPE fields
- * @see https://www.rfc-editor.org/rfc/rfc2822#section-3.6 - Header field definitions
+ * @see https://www.rfc-editor.org/rfc/rfc5322#section-3.6 - Header field definitions
  */
 export interface MessageEnvelope {
-  /** RFC 2822 Date header - origination date from the sender's perspective. */
+  /** RFC 5322 Date header - origination date from the sender's perspective. */
   date: Date | null;
-  /** RFC 2822 Subject header, RFC 2047-decoded by imapflow. */
+  /** RFC 5322 Subject header, RFC 2047-decoded by imapflow. */
   subject: string | null;
-  /** Message author(s). RFC 2822 requires at least one, but real-world mail may violate this. */
+  /** Message author(s). RFC 5322 requires at least one, but real-world mail may violate this. */
   from: MessageAddress[];
   /**
    * Agent that submitted the message. Per RFC 3501 the server should default
@@ -134,7 +134,7 @@ export interface FetchedMessage {
   /** Parsed IMAP ENVELOPE data. See {@link MessageEnvelope}. */
   envelope: MessageEnvelope;
   /**
-   * RFC 2822 References header - full thread ancestry as a space-delimited
+   * RFC 5322 References header - full thread ancestry as a space-delimited
    * string of angle-bracketed Message-IDs. Fetched via
    * `BODY.PEEK[HEADER.FIELDS (REFERENCES)]` since IMAP ENVELOPE omits it.
    * Null if the header is absent.
@@ -148,7 +148,7 @@ export interface FetchedMessage {
   flags: Set<string>;
   /**
    * Server-assigned receive timestamp (INTERNALDATE). Reflects when the
-   * message arrived at the server, not the RFC 2822 Date header.
+   * message arrived at the server, not the RFC 5322 Date header.
    */
   internalDate: Date;
   /** Full message size in octets as reported by RFC822.SIZE. Includes headers and body. */

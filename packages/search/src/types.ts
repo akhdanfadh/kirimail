@@ -3,7 +3,7 @@ import type { AttachmentMetadata } from "@kirimail/shared";
 /**
  * Single Meilisearch document representing one synced message.
  *
- * Derived search projection of the `messages` row - RFC 2822 header names
+ * Derived search projection of the `messages` row - RFC 5322 header names
  * (no `*Address` suffix), addresses as `"Name <addr>"` strings, dates as
  * unix seconds. Sync-only fields (`providerUid`, `uidValidity`) absent;
  * `sentDate` absent too (sender-controlled, unreliable) - `receivedDate`
@@ -22,7 +22,7 @@ export interface MessageDoc {
   /** `null` when the IMAP envelope reported NIL. */
   subject: string | null;
   /**
-   * Each entry is `"Name <addr>"`, or `"<addr>"` when name is NIL. RFC 2822
+   * Each entry is `"Name <addr>"`, or `"<addr>"` when name is NIL. RFC 5322
    * allows multiple authors but in practice there is exactly one entry;
    * empty array means the envelope reported no From header.
    */
