@@ -1,14 +1,14 @@
 export type { Meilisearch } from "./client";
-export type { BodyPartial, HeaderDoc } from "./primitives";
+export type { BodyPartial, SyncedMessageDoc } from "./primitives";
 export type { MessageDoc } from "./types";
 
 export { createSearchClient, searchClient } from "./client";
-export { ensureMeilisearchConfig } from "./config";
+export { ensureMeilisearchConfig, MESSAGES_INDEX_UID } from "./config";
 export {
   deleteMessageDoc,
   deleteMessagesByEmailAccount,
   getMessageDoc,
-  upsertMessageAttachments,
   upsertMessageBody,
-  upsertMessageHeaders,
+  upsertMessageFlags,
+  upsertSyncedMessage,
 } from "./primitives";

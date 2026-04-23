@@ -1,4 +1,3 @@
-import type { AttachmentMetadata } from "@kirimail/shared";
 import type { Meilisearch } from "meilisearch";
 
 import { MeilisearchApiError } from "meilisearch";
@@ -8,53 +7,69 @@ import type { MessageDoc } from "./types";
 import { MESSAGES_INDEX_UID } from "./config";
 import { awaitTaskOrThrow } from "./tasks";
 
-// NOTE: the orphan hazard flagged on `upsertMessageAttachments` and
-// `upsertMessageBody` (partial updates against a missing id) is closed
-// at the caller layer - the dispatcher should serialize per-message-id
-// processing (pg-boss `singletonKey: message.id`) so a concurrent
-// message.deleted can't race against a partial write. Without that
-// guarantee, orphans are possible and need a scheduled sweep
-// (`emailAccountId NOT EXISTS` filter) to reconcile.
+// NOTE: `upsertMessageBody` and `upsertMessageFlags` only write some of a doc's
+// fields. If no doc with that id exists, Meilisearch creates one anyway, that is
+// an "orphan" that's missing the tenant fields (userId / emailAccountId / mailboxId)
+// and so won't show up in any user's search. How it happens: an async worker (body
+// fetch, flag sync) acts on a message that the dispatcher deletes mid-way; the late
+// partial write lands on a doc that's just been removed. Two-layer fix at that worker:
+// (1) before the upsert, re-read the `messages` row and call `getMessageDoc`; skip
+// if either is missing (shrinks the race window to milliseconds). (2) a scheduled
+// cleanup job runs `deleteDocuments` filtered for missing tenant fields to clear any
+// residual. Swept docs stay gone: no code writes tenant fields as a partial update,
+// so an orphan can't come back to life.
 
-/** The required-field subset of {@link MessageDoc} written at the header stage. */
-export type HeaderDoc = Omit<MessageDoc, "attachments" | "bodyText" | "bodyHtml">;
+/**
+ * The non-body projection of {@link MessageDoc} written by the dispatcher
+ * when a `message.synced` event fires. Headers and attachments metadata are
+ * both known at sync time and written in a single Meilisearch task.
+ *
+ * `attachments` is required (not optional as in {@link MessageDoc}) so the
+ * dispatcher must always pass the current set - including `[]` on reparse -
+ * to replace any stale list left from a prior sync.
+ */
+export type SyncedMessageDoc = Omit<MessageDoc, "bodyText" | "bodyHtml" | "attachments"> & {
+  attachments: NonNullable<MessageDoc["attachments"]>;
+};
 
 /** The body-field subset of {@link MessageDoc} written at the body-fetch stage. */
 export type BodyPartial = Pick<MessageDoc, "bodyText" | "bodyHtml">;
 
 /**
- * Header-stage upsert, covering every field in {@link HeaderDoc} (including
- * `flags`). Partial-merge via `updateDocuments` so re-runs preserve
- * later-stage fields (attachments, body).
+ * Sync-stage upsert: writes headers and attachments metadata in one Meilisearch
+ * task. Partial-merge is done via `updateDocuments` so re-dispatches preserve
+ * later-stage body fields written by the body-fetch worker.
  */
-export async function upsertMessageHeaders(
+export async function upsertSyncedMessage(
   client: Meilisearch,
-  doc: HeaderDoc,
+  doc: SyncedMessageDoc,
   indexUid: string = MESSAGES_INDEX_UID,
 ): Promise<void> {
   await awaitTaskOrThrow(
-    "upsertMessageHeaders",
+    "upsertSyncedMessage",
     client.index<MessageDoc>(indexUid).updateDocuments([doc]),
   );
 }
 
 /**
- * Attachment-stage partial upsert.
+ * Flag-sync stage partial upsert. Writes ONLY `flags`, so the full header doc
+ * doesn't need to be rewritten when a CONDSTORE flag-delta fetch surfaces a
+ * `\Seen` / `\Flagged` / keyword change.
  *
  * Caller invariant: the document must already exist (created via
- * {@link upsertMessageHeaders}). Calling this on a missing id creates an
- * orphan `{id, attachments}` doc - invisible to tenant-scoped queries
- * and unreachable by {@link deleteMessagesByEmailAccount}.
+ * {@link upsertSyncedMessage}). Calling this on a missing id creates an
+ * orphan doc - invisible to tenant-scoped queries and unreachable by
+ * {@link deleteMessagesByEmailAccount}.
  */
-export async function upsertMessageAttachments(
+export async function upsertMessageFlags(
   client: Meilisearch,
   id: string,
-  attachments: AttachmentMetadata[],
+  flags: string[],
   indexUid: string = MESSAGES_INDEX_UID,
 ): Promise<void> {
   await awaitTaskOrThrow(
-    "upsertMessageAttachments",
-    client.index<MessageDoc>(indexUid).updateDocuments([{ id, attachments }]),
+    "upsertMessageFlags",
+    client.index<MessageDoc>(indexUid).updateDocuments([{ id, flags }]),
   );
 }
 
@@ -62,7 +77,7 @@ export async function upsertMessageAttachments(
  * Body-stage partial upsert.
  *
  * Caller invariant: the document must already exist (created via
- * {@link upsertMessageHeaders}). Calling this on a missing id creates an
+ * {@link upsertSyncedMessage}). Calling this on a missing id creates an
  * orphan doc - invisible to tenant-scoped queries and unreachable by
  * {@link deleteMessagesByEmailAccount}.
  */

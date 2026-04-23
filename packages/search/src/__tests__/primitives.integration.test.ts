@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import type { HeaderDoc } from "../primitives";
+import type { SyncedMessageDoc } from "../primitives";
 import type { MessageDoc } from "../types";
 
 import { searchClient } from "../client";
@@ -9,14 +9,14 @@ import {
   deleteMessageDoc,
   deleteMessagesByEmailAccount,
   getMessageDoc,
-  upsertMessageAttachments,
   upsertMessageBody,
-  upsertMessageHeaders,
+  upsertMessageFlags,
+  upsertSyncedMessage,
 } from "../primitives";
 import { awaitTaskOrThrow } from "../tasks";
 import { TEST_INDEX_UID } from "./helpers";
 
-function makeHeader(overrides: Partial<HeaderDoc> = {}): HeaderDoc {
+function makeSyncedMessageDoc(overrides: Partial<SyncedMessageDoc> = {}): SyncedMessageDoc {
   return {
     id: "msg_1",
     userId: "user_1",
@@ -30,6 +30,16 @@ function makeHeader(overrides: Partial<HeaderDoc> = {}): HeaderDoc {
     receivedDate: 1_700_000_000,
     sizeBytes: 4096,
     flags: ["\\Seen"],
+    attachments: [
+      {
+        filename: "report.pdf",
+        mimeType: "application/pdf",
+        size: 4096,
+        contentId: null,
+        disposition: "attachment",
+        partPath: "2",
+      },
+    ],
     ...overrides,
   };
 }
@@ -47,20 +57,21 @@ describe("indexing primitives", () => {
     );
   });
 
-  it("round-trips header writes via getMessageDoc", async () => {
-    const header = makeHeader();
-    await upsertMessageHeaders(searchClient, header, TEST_INDEX_UID);
+  it("round-trips sync-stage writes, including attachments metadata", async () => {
+    const doc = makeSyncedMessageDoc();
+    await upsertSyncedMessage(searchClient, doc, TEST_INDEX_UID);
 
-    const fetched = await getMessageDoc(searchClient, header.id, TEST_INDEX_UID);
+    const fetched = await getMessageDoc(searchClient, doc.id, TEST_INDEX_UID);
     expect(fetched).not.toBeNull();
     expect(fetched).toMatchObject({
-      id: header.id,
-      emailAccountId: header.emailAccountId,
-      subject: header.subject,
-      from: header.from,
-      to: header.to,
-      receivedDate: header.receivedDate,
-      flags: header.flags,
+      id: doc.id,
+      emailAccountId: doc.emailAccountId,
+      subject: doc.subject,
+      from: doc.from,
+      to: doc.to,
+      receivedDate: doc.receivedDate,
+      flags: doc.flags,
+      attachments: doc.attachments,
     });
   });
 
@@ -68,80 +79,75 @@ describe("indexing primitives", () => {
     expect(await getMessageDoc(searchClient, "missing_id", TEST_INDEX_UID)).toBeNull();
   });
 
-  it("re-running upsertMessageHeaders preserves later-stage attachment enrichment", async () => {
-    const header = makeHeader({ id: "msg_redispatch" });
-    await upsertMessageHeaders(searchClient, header, TEST_INDEX_UID);
-    await upsertMessageAttachments(
-      searchClient,
-      header.id,
-      [
-        {
-          filename: "a.txt",
-          mimeType: "text/plain",
-          size: 10,
-          contentId: null,
-          disposition: "attachment",
-          partPath: "2",
-        },
-      ],
-      TEST_INDEX_UID,
-    );
-
-    // Re-running the header upsert against the same id must not strip attachments.
-    await upsertMessageHeaders(searchClient, header, TEST_INDEX_UID);
-
-    const fetched = (await getMessageDoc(searchClient, header.id, TEST_INDEX_UID)) as MessageDoc;
-    expect(fetched.attachments).toHaveLength(1);
-  });
-
-  it("layers body fields over headers and attachments without overwriting them", async () => {
-    const header = makeHeader({ id: "msg_body" });
-    await upsertMessageHeaders(searchClient, header, TEST_INDEX_UID);
-    await upsertMessageAttachments(
-      searchClient,
-      header.id,
-      [
-        {
-          filename: "a.pdf",
-          mimeType: "application/pdf",
-          size: 100,
-          contentId: null,
-          disposition: "attachment",
-          partPath: "2",
-        },
-      ],
-      TEST_INDEX_UID,
-    );
+  it("re-dispatch preserves later-stage body fields and replaces stale attachments", async () => {
+    // Realistic reparse: the sync-stage event re-fires after body-fetch has
+    // enriched the doc, and the attachment list has shrunk to zero (e.g. a
+    // reparse that no longer recognizes a part as an attachment). The
+    // upsert must (a) leave bodyText/bodyHtml intact - `updateDocuments`
+    // is partial-merge - and (b) replace the prior attachments array with
+    // the new explicit `[]` rather than leave stale entries behind.
+    const id = "msg_redispatch";
+    await upsertSyncedMessage(searchClient, makeSyncedMessageDoc({ id }), TEST_INDEX_UID);
     await upsertMessageBody(
       searchClient,
-      header.id,
-      { bodyText: "Hello world", bodyHtml: "<p>Hello world</p>" },
+      id,
+      { bodyText: "indexed body", bodyHtml: "<p>indexed body</p>" },
       TEST_INDEX_UID,
     );
 
-    const fetched = (await getMessageDoc(searchClient, header.id, TEST_INDEX_UID)) as MessageDoc;
-    expect(fetched.subject).toBe(header.subject);
-    expect(fetched.attachments).toHaveLength(1);
-    expect(fetched.bodyText).toBe("Hello world");
-    expect(fetched.bodyHtml).toBe("<p>Hello world</p>");
+    await upsertSyncedMessage(
+      searchClient,
+      makeSyncedMessageDoc({ id, attachments: [] }),
+      TEST_INDEX_UID,
+    );
+
+    const fetched = (await getMessageDoc(searchClient, id, TEST_INDEX_UID)) as MessageDoc;
+    expect(fetched.bodyText).toBe("indexed body");
+    expect(fetched.bodyHtml).toBe("<p>indexed body</p>");
+    expect(fetched.attachments).toEqual([]);
+  });
+
+  it("upsertMessageFlags updates flags without touching headers, attachments, or body", async () => {
+    // Pins the surgical-partial contract: flag sync must not rewrite
+    // header fields or attachment lists, and must preserve any
+    // later-stage body enrichment. A regression that expanded
+    // upsertMessageFlags's payload would silently clobber those fields.
+    const doc = makeSyncedMessageDoc({ id: "msg_flags", flags: ["\\Seen"] });
+    await upsertSyncedMessage(searchClient, doc, TEST_INDEX_UID);
+    await upsertMessageBody(
+      searchClient,
+      doc.id,
+      { bodyText: "hello", bodyHtml: "<p>hello</p>" },
+      TEST_INDEX_UID,
+    );
+
+    await upsertMessageFlags(searchClient, doc.id, ["\\Seen", "\\Flagged"], TEST_INDEX_UID);
+
+    const fetched = (await getMessageDoc(searchClient, doc.id, TEST_INDEX_UID)) as MessageDoc;
+    expect(fetched.flags).toEqual(["\\Seen", "\\Flagged"]);
+    expect(fetched.subject).toBe(doc.subject);
+    expect(fetched.from).toEqual(doc.from);
+    expect(fetched.attachments).toEqual(doc.attachments);
+    expect(fetched.bodyText).toBe("hello");
+    expect(fetched.bodyHtml).toBe("<p>hello</p>");
   });
 
   it("accepts partial body writes that preserve the other body field", async () => {
-    const header = makeHeader({ id: "msg_partial_body" });
-    await upsertMessageHeaders(searchClient, header, TEST_INDEX_UID);
+    const doc = makeSyncedMessageDoc({ id: "msg_partial_body" });
+    await upsertSyncedMessage(searchClient, doc, TEST_INDEX_UID);
 
-    await upsertMessageBody(searchClient, header.id, { bodyText: "plain only" }, TEST_INDEX_UID);
-    const afterText = (await getMessageDoc(searchClient, header.id, TEST_INDEX_UID)) as MessageDoc;
+    await upsertMessageBody(searchClient, doc.id, { bodyText: "plain only" }, TEST_INDEX_UID);
+    const afterText = (await getMessageDoc(searchClient, doc.id, TEST_INDEX_UID)) as MessageDoc;
     expect(afterText.bodyText).toBe("plain only");
     expect(afterText.bodyHtml).toBeUndefined();
 
     await upsertMessageBody(
       searchClient,
-      header.id,
+      doc.id,
       { bodyHtml: "<p>html added</p>" },
       TEST_INDEX_UID,
     );
-    const afterHtml = (await getMessageDoc(searchClient, header.id, TEST_INDEX_UID)) as MessageDoc;
+    const afterHtml = (await getMessageDoc(searchClient, doc.id, TEST_INDEX_UID)) as MessageDoc;
     expect(afterHtml.bodyText).toBe("plain only");
     expect(afterHtml.bodyHtml).toBe("<p>html added</p>");
   });
@@ -152,47 +158,21 @@ describe("indexing primitives", () => {
   });
 
   it("deleteMessageDoc returns 1 and removes the doc for a known id", async () => {
-    const header = makeHeader({ id: "msg_delete" });
-    await upsertMessageHeaders(searchClient, header, TEST_INDEX_UID);
+    const doc = makeSyncedMessageDoc({ id: "msg_delete" });
+    await upsertSyncedMessage(searchClient, doc, TEST_INDEX_UID);
 
-    const count = await deleteMessageDoc(searchClient, header.id, TEST_INDEX_UID);
+    const count = await deleteMessageDoc(searchClient, doc.id, TEST_INDEX_UID);
     expect(count).toBe(1);
-    expect(await getMessageDoc(searchClient, header.id, TEST_INDEX_UID)).toBeNull();
+    expect(await getMessageDoc(searchClient, doc.id, TEST_INDEX_UID)).toBeNull();
   });
 
-  it("upsertMessageAttachments with an empty array clears the existing list", async () => {
-    // Reparse scenario: a message's attachment list shrinks to zero. The
-    // partial upsert must replace the prior list (not be a no-op), so the
-    // doc ends with an explicit empty array rather than the stale set.
-    const header = makeHeader({ id: "msg_reparse" });
-    await upsertMessageHeaders(searchClient, header, TEST_INDEX_UID);
-    await upsertMessageAttachments(
-      searchClient,
-      header.id,
-      [
-        {
-          filename: "first.pdf",
-          mimeType: "application/pdf",
-          size: 100,
-          contentId: null,
-          disposition: "attachment",
-          partPath: "2",
-        },
-      ],
-      TEST_INDEX_UID,
-    );
-
-    await upsertMessageAttachments(searchClient, header.id, [], TEST_INDEX_UID);
-
-    const fetched = (await getMessageDoc(searchClient, header.id, TEST_INDEX_UID)) as MessageDoc;
-    expect(fetched.attachments).toEqual([]);
-  });
-
-  it("partial upserts against a missing id create an orphan unreachable by emailAccountId filter", async () => {
-    // Pins the documented hazard on `upsertMessageBody` (and
-    // `upsertMessageAttachments`): Meilisearch's updateDocuments creates
+  it("partial body upserts against a missing id create an orphan unreachable by emailAccountId filter", async () => {
+    // Pins the documented hazard: Meilisearch's `updateDocuments` creates
     // the doc if missing, leaving only the partial fields set. With no
     // `emailAccountId`, the orphan escapes tenant-scoped cleanup.
+    // `upsertMessageBody` and `upsertMessageFlags` both share this shape
+    // (`{id, ...partial}`); only `upsertMessageBody` is exercised here
+    // since the Meilisearch behavior under test is identical for both.
     const orphanId = "orphan_msg";
     await upsertMessageBody(searchClient, orphanId, { bodyText: "orphaned text" }, TEST_INDEX_UID);
 
@@ -208,19 +188,19 @@ describe("indexing primitives", () => {
   });
 
   it("deleteMessagesByEmailAccount removes only the targeted account and returns the count", async () => {
-    await upsertMessageHeaders(
+    await upsertSyncedMessage(
       searchClient,
-      makeHeader({ id: "a1", emailAccountId: "acct_A" }),
+      makeSyncedMessageDoc({ id: "a1", emailAccountId: "acct_A" }),
       TEST_INDEX_UID,
     );
-    await upsertMessageHeaders(
+    await upsertSyncedMessage(
       searchClient,
-      makeHeader({ id: "a2", emailAccountId: "acct_A" }),
+      makeSyncedMessageDoc({ id: "a2", emailAccountId: "acct_A" }),
       TEST_INDEX_UID,
     );
-    await upsertMessageHeaders(
+    await upsertSyncedMessage(
       searchClient,
-      makeHeader({ id: "b1", emailAccountId: "acct_B" }),
+      makeSyncedMessageDoc({ id: "b1", emailAccountId: "acct_B" }),
       TEST_INDEX_UID,
     );
 
