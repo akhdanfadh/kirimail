@@ -1,4 +1,5 @@
 export type { InsertDomainEventInput } from "./domain-event";
+export type { MessageWithOwnership } from "./message";
 export type { InsertOutboundMessageInput } from "./outbound-messages";
 
 export {
@@ -10,6 +11,7 @@ export {
 } from "./domain-event";
 export { getEmailAccountById, listAllEmailAccountIds } from "./email-account";
 export { applyMailboxSync, findMailboxPathByRole, reconcileMailboxes } from "./mailbox";
+export { getMessageWithOwnership } from "./message";
 export {
   deleteOutboundMessage,
   getOutboundMessageById,

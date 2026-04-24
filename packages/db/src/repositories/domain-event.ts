@@ -1,20 +1,24 @@
 /**
- * Primitives for reading and mutating {@link domainEvents} and
- * {@link domainEventConsumers}.
+ * Read and write helpers for {@link domainEvents} and {@link domainEventConsumers}.
  *
- * At-least-once is the contract: this file exposes no "terminally
- * failed" state and no reaper. Callers are expected to re-offer failed
- * events on their own schedule, so consumers must be idempotent -
- * re-processing must produce the same final state.
+ * Delivery is at-least-once: a consumer may be offered the same event
+ * more than once. This file has no "give up on this event" state and no
+ * reaper - callers re-offer failed events on their own schedule. Every
+ * consumer must therefore be idempotent (running it twice on the same
+ * event lands on the same final state).
  *
- * Tenant-agnostic: no `userId` / `accountId` signatures.
- * Tenant scoping happens at the API layer.
+ * Tenant-agnostic: no `userId` / `accountId` parameters here. The API
+ * layer is responsible for scoping reads and writes to the right user.
+ *
+ * Vocabulary: a "tick" is one dispatcher poll cycle - the loop that
+ * pulls a batch via {@link listUnconsumedDomainEvents}, processes it,
+ * then marks each event consumed or failed.
  */
 
 import type { DomainAggregateType, DomainEventType } from "@kirimail/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
-import { and, eq, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 
 import type * as schema from "../schema";
 
@@ -51,78 +55,98 @@ export async function insertDomainEvent(db: Db, input: InsertDomainEventInput) {
 }
 
 /**
- * Batch-insert domain events; empty input short-circuits without SQL.
- * Handles producers that pass the `RETURNING` set of a conflict-aware
- * insert and get back zero new rows.
+ * Insert many domain events in one statement.
+ * Returns `[]` without issuing SQL when `inputs` is empty.
  */
 export async function insertDomainEvents(db: Db, inputs: InsertDomainEventInput[]) {
+  // Postgres rejects `INSERT` with no `VALUES`, so we can't just let drizzle
+  // run on an empty array. Producers that pipe in the `RETURNING` rows of an
+  // `INSERT ... ON CONFLICT DO NOTHING` get zero rows whenever every value
+  // collided; short-circuiting here saves them from branching.
   if (inputs.length === 0) return [];
   const rows = inputs.map((input) => ({ id: generateId(), ...input }));
   return db.insert(domainEvents).values(rows).returning();
 }
 
 /**
- * Return oldest-first domain events that have not yet been consumed by
- * `consumerName`. An event is unconsumed for a given consumer when its
- * `domain_event_consumers` row is missing or has `last_consumed_at IS NULL`.
+ * Return the oldest events in `eventTypes` that `consumerName` hasn't
+ * successfully processed yet, up to `batchSize`. An event counts as
+ * unconsumed when its `domain_event_consumers` row is missing or has
+ * `last_consumed_at IS NULL` (last attempt failed).
  *
- * Secondary sort on `id` pins ordering deterministically when two
- * events share the same `created_at` microsecond.
+ * Pass exactly the event types your consumer's `switch` handles. A
+ * wider allowlist breaks the moment a new event type lands in another
+ * domain: the consumer's `switch` would throw on those rows and the
+ * dispatcher would re-fail them on every tick.
  *
- * NOTE: the `id` tiebreak is deterministic, not causal. `id` is a random
- * nanoid, so ties sort in nanoid order, not insertion order. Fine for
- * idempotent consumers (pagination stability is all they need). Revisit
- * with a time-sortable id (ULID, etc.) if a consumer needs causal order
- * within one batch.
+ * Not safe to call concurrently on its own: the SELECT takes no row
+ * locks, so two parallel calls can return the same events.
  *
- * NOTE: No `FOR UPDATE SKIP LOCKED`. Exclusivity is delegated to
- * pg-boss via `singletonKey=consumerName, teamSize=1` - at most one
- * handler invocation per consumer runs at once. If that coordination
- * ever moves out of pg-boss, wrap `list + mark` in a transaction with
- * `FOR UPDATE SKIP LOCKED` or switch to a `claimed_at` reserve
- * pattern with stale-claim recovery.
- *
- * NOTE: the cost driver is the `domain_events` scan by `created_at`,
- * which grows with total event count rather than backlog. Revisit
- * when this call exceeds ~50ms or `domain_events` passes ~1M rows
- * without retention - fix is a per-consumer cursor table (one row
- * per consumer holding the last-dispatched position; query becomes
- * `WHERE created_at > cursor` and scan cost becomes O(backlog)
- * instead of O(total events)).
+ * Order: `created_at` first, then `id` as a tiebreaker - two events
+ * written in the same microsecond would otherwise flip order between calls.
  */
-export async function listUnconsumedDomainEvents(db: Db, consumerName: string, batchSize: number) {
-  return db
-    .select({
-      id: domainEvents.id,
-      aggregateType: domainEvents.aggregateType,
-      aggregateId: domainEvents.aggregateId,
-      eventType: domainEvents.eventType,
-      payload: domainEvents.payload,
-      createdAt: domainEvents.createdAt,
-    })
-    .from(domainEvents)
-    .leftJoin(
-      domainEventConsumers,
-      and(
-        eq(domainEventConsumers.eventId, domainEvents.id),
-        eq(domainEventConsumers.consumerName, consumerName),
-      ),
-    )
-    .where(or(isNull(domainEventConsumers.eventId), isNull(domainEventConsumers.lastConsumedAt)))
-    .orderBy(domainEvents.createdAt, domainEvents.id)
-    .limit(batchSize);
+export async function listUnconsumedDomainEvents(
+  db: Db,
+  consumerName: string,
+  eventTypes: readonly DomainEventType[],
+  batchSize: number,
+) {
+  return (
+    db
+      // NOTE: no row-level locking on this SELECT. Two dispatchers running at
+      // the same time could otherwise fetch the same events and both process
+      // them, wasting work. We prevent that via pg-boss's `policy: "stately"`
+      // on the consumer's queue - it runs at most one handler invocation at
+      // a time, so two ticks never overlap. This only holds as long as we run
+      // a single pg-boss instance. If we ever run several against the same DB,
+      // wrap `list + mark` in a transaction with `FOR UPDATE SKIP LOCKED`,
+      // or switch to a reserve-then-process pattern (each tick stamps a
+      // `claimed_at`; a separate job sweeps claims that have gone stale).
+      .select({
+        id: domainEvents.id,
+        aggregateType: domainEvents.aggregateType,
+        aggregateId: domainEvents.aggregateId,
+        eventType: domainEvents.eventType,
+        payload: domainEvents.payload,
+        createdAt: domainEvents.createdAt,
+      })
+      .from(domainEvents)
+      .leftJoin(
+        domainEventConsumers,
+        and(
+          eq(domainEventConsumers.eventId, domainEvents.id),
+          eq(domainEventConsumers.consumerName, consumerName),
+        ),
+      )
+      // NOTE: Cost grows with the total number of events, not the backlog -
+      // the `domain_events` scan is ordered by `created_at` and doesn't cut
+      // off at the caller's progress. Revisit when this call exceeds ~50ms or
+      // the table passes ~1M rows without retention. Fix is a per-consumer
+      // cursor table: one row per consumer holding the last-dispatched
+      // `created_at`, so the query becomes `WHERE created_at > cursor` and
+      // only scans what hasn't been handled yet.
+      .where(
+        and(
+          inArray(domainEvents.eventType, eventTypes),
+          or(isNull(domainEventConsumers.eventId), isNull(domainEventConsumers.lastConsumedAt)),
+        ),
+      )
+      // NOTE: The tiebreak on `id` is stable between calls but not causal.
+      // `id` is a random nanoid, so ties sort in nanoid order, not insertion
+      // order - fine for idempotent consumers (they just need stable pagination).
+      // If a consumer ever needs true causal order within one batch,
+      // swap `id` for a time-sortable id type like ULID.
+      .orderBy(domainEvents.createdAt, domainEvents.id)
+      .limit(batchSize)
+  );
 }
 
 /**
  * Record that `consumerName` successfully processed `eventId`.
- * Upsert: no row exists until the first processing attempt lands.
- * Clears `lastError` and bumps `attempts` on both the insert and update
- * paths so a success after prior failures ends with a correct attempt count.
  *
- * No `where` guard on the UPDATE: success is terminal, so a retry that
- * succeeds after a prior failure always stamps `lastConsumedAt` and
- * clears `lastError`. Asymmetric with {@link markDomainEventFailed}'s
- * guarded update - "success wins" is the at-least-once contract.
+ * Uses an upsert. Both paths set `lastConsumedAt` to now, clear
+ * `lastError`, and bump `attempts`, so a success that follows
+ * earlier failures still ends with the right attempt count.
  */
 export async function markDomainEventConsumed(db: Db, eventId: string, consumerName: string) {
   const now = new Date();
@@ -135,6 +159,10 @@ export async function markDomainEventConsumed(db: Db, eventId: string, consumerN
       lastError: null,
       attempts: 1,
     })
+    // No `where` guard: success is terminal under at-least-once delivery ("success wins").
+    // A retry that succeeds after a prior failure always overwrites the failed state.
+    // Contrast with `markDomainEventFailed`, whose UPDATE IS guarded so a late failure
+    // report can't un-consume an already-successful event.
     .onConflictDoUpdate({
       target: [domainEventConsumers.eventId, domainEventConsumers.consumerName],
       set: {
@@ -148,16 +176,17 @@ export async function markDomainEventConsumed(db: Db, eventId: string, consumerN
 }
 
 /**
- * Record that `consumerName` failed to process `eventId`. Upsert with
- * same conflict key as {@link markDomainEventConsumed}. Stamps the
- * truncated `error`, bumps `attempts`, and leaves `lastConsumedAt`
- * NULL so {@link listUnconsumedDomainEvents} re-offers the event.
+ * Record that `consumerName` failed to process `eventId`.
  *
- * Guarded against resurrection: if the row is already consumed
- * (`lastConsumedAt IS NOT NULL`) the UPDATE is skipped and the
- * function returns `undefined`. A late/stale failure report must not
- * un-consume a successfully-processed event - callers treat
- * `undefined` as "someone else got there first."
+ * Uses an upsert. Writes the truncated `error`, bumps `attempts`,
+ * and leaves `lastConsumedAt` NULL so {@link listUnconsumedDomainEvents}
+ * offers this event again on the next tick.
+ *
+ * Guarded against "un-consuming" a success: if the row is already
+ * consumed, the UPDATE is skipped and the function returns `undefined`.
+ * This covers the race where a slow worker reports failure AFTER
+ * another attempt has already succeeded. Callers treat `undefined`
+ * as "a later attempt already won."
  */
 export async function markDomainEventFailed(
   db: Db,

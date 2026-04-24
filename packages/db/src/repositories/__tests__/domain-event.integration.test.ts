@@ -132,10 +132,20 @@ describe("domain-event repository", () => {
         { aggregateId: "msg-c" },
       ]);
 
-      const batch = await listUnconsumedDomainEvents(db, "meilisearch-indexer", 2);
+      const batch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        2,
+      );
       expect(batch.map((e) => e.id)).toEqual([a!.id, b!.id]);
 
-      const full = await listUnconsumedDomainEvents(db, "meilisearch-indexer", 10);
+      const full = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
       expect(full.map((e) => e.id)).toEqual([a!.id, b!.id, c!.id]);
     });
 
@@ -145,7 +155,12 @@ describe("domain-event repository", () => {
 
       await markDomainEventConsumed(db, a!.id, "meilisearch-indexer");
 
-      const batch = await listUnconsumedDomainEvents(db, "meilisearch-indexer", 10);
+      const batch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
       expect(batch.map((e) => e.id)).toEqual([b!.id]);
     });
 
@@ -158,7 +173,12 @@ describe("domain-event repository", () => {
       const a = await insertDomainEvent(db, buildInput());
       await markDomainEventFailed(db, a!.id, "meilisearch-indexer", "network hiccup");
 
-      const batch = await listUnconsumedDomainEvents(db, "meilisearch-indexer", 10);
+      const batch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
       expect(batch.map((e) => e.id)).toEqual([a!.id]);
     });
 
@@ -172,10 +192,20 @@ describe("domain-event repository", () => {
 
       await markDomainEventConsumed(db, a!.id, "meilisearch-indexer");
 
-      const indexerBatch = await listUnconsumedDomainEvents(db, "meilisearch-indexer", 10);
+      const indexerBatch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
       expect(indexerBatch.map((e) => e.id)).toEqual([b!.id]);
 
-      const rulesBatch = await listUnconsumedDomainEvents(db, "rules-engine", 10);
+      const rulesBatch = await listUnconsumedDomainEvents(
+        db,
+        "rules-engine",
+        ["message.synced"],
+        10,
+      );
       expect(rulesBatch.map((e) => e.id)).toEqual([a!.id, b!.id]);
     });
 
@@ -213,8 +243,40 @@ describe("domain-event repository", () => {
         },
       ]);
 
-      const batch = await listUnconsumedDomainEvents(db, "meilisearch-indexer", 10);
+      const batch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
       expect(batch.map((e) => e.id)).toEqual([smallerId, largerId]);
+    });
+
+    it("filters out events whose eventType is outside the allowlist", async () => {
+      // Pins the point of the `eventTypes` allowlist: a consumer that
+      // only knows how to handle `message.synced` must never be handed
+      // events from other domains (future tag / rule events), or its
+      // dispatcher would mark them failed on every tick.
+      //
+      // `DomainEventType` is a single-literal TS union today, so the raw
+      // SQL insert below forges a second value - the typed repository
+      // API can't express one yet.
+      const wantedId = generateId();
+      const otherId = generateId();
+      await db.execute(sql`
+        INSERT INTO domain_events (id, aggregate_type, aggregate_id, event_type, payload, created_at)
+        VALUES
+          (${wantedId}, 'message', 'msg-wanted', 'message.synced', '{}'::jsonb, '2025-01-01T00:00:00Z'),
+          (${otherId}, 'message', 'msg-other', 'tag.applied', '{}'::jsonb, '2025-01-01T00:00:01Z')
+      `);
+
+      const batch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
+      expect(batch.map((e) => e.id)).toEqual([wantedId]);
     });
   });
 
@@ -299,15 +361,13 @@ describe("domain-event repository", () => {
     });
 
     it("refreshes updatedAt on every retry, not just the first attempt", async () => {
-      // Pins that Drizzle's schema-level $onUpdate hook covers the
-      // onConflictDoUpdate path, not just .update() calls. This is
-      // non-obvious from the Drizzle API surface - the hook is wired
-      // through buildUpdateSet (pg-core/dialect.ts), which both paths
-      // share - and a future Drizzle version that changed this would
-      // silently stop advancing updatedAt after the first attempt,
-      // breaking the schema's "timestamp of the last attempt"
-      // invariant. Two mark-failed calls with a small gap must
-      // produce strictly increasing timestamps.
+      // Pins that Drizzle runs our `$onUpdate` column hook on the
+      // `INSERT ... ON CONFLICT DO UPDATE` path, not just on plain
+      // `.update()` calls. If a future Drizzle upgrade stopped running
+      // the hook here, `updatedAt` would freeze at the first attempt
+      // and the schema's "timestamp of the last attempt" invariant
+      // would silently break. Two failed writes with a small sleep
+      // between them must produce strictly increasing timestamps.
       const event = await insertDomainEvent(db, buildInput());
       const first = await markDomainEventFailed(db, event!.id, "meilisearch-indexer", "one");
       await new Promise((r) => setTimeout(r, 5));
@@ -317,13 +377,14 @@ describe("domain-event repository", () => {
     });
 
     it("rejects an already-consumed row (resurrection guard)", async () => {
-      // A late failure report from a stale worker must not un-consume
-      // a successful event. The UPDATE is gated on
-      // `lastConsumedAt IS NULL`, returns `undefined`, and leaves the
-      // row untouched. `updatedAt` must also not tick - a refactor
-      // that weakened the SET clause into a no-op while still running
-      // the UPDATE would let `$onUpdate` stamp a new timestamp even
-      // though no user-visible column changed.
+      // A late failure report from a slow worker must not un-consume a
+      // row that another attempt has already succeeded on. The UPDATE
+      // is gated on `lastConsumedAt IS NULL`, returns `undefined`, and
+      // leaves the row untouched. `updatedAt` must also not tick: a
+      // refactor that weakened the SET clause into a no-op but still
+      // ran the UPDATE would let `$onUpdate` stamp a fresh timestamp
+      // even though no user-visible column changed - looking like
+      // "something happened" on the ops view when nothing did.
       const event = await insertDomainEvent(db, buildInput());
       const consumed = await markDomainEventConsumed(db, event!.id, "meilisearch-indexer");
 
