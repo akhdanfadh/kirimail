@@ -120,6 +120,7 @@ export async function applyMailboxSync(
         bccAddress: msg.envelope.bcc,
         flags: [...msg.flags],
         attachments: msg.attachments,
+        encrypted: msg.encrypted,
         internalDate: msg.internalDate,
         sizeOctets: msg.sizeOctets,
       }));

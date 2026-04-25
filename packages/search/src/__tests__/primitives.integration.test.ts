@@ -30,6 +30,7 @@ function makeSyncedMessageDoc(overrides: Partial<SyncedMessageDoc> = {}): Synced
     receivedDate: 1_700_000_000,
     sizeBytes: 4096,
     flags: ["\\Seen"],
+    encrypted: false,
     attachments: [
       {
         filename: "report.pdf",

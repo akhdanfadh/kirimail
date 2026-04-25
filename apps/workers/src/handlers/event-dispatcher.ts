@@ -282,6 +282,7 @@ async function handleMessageSynced(deps: EventDispatcherDeps, messageId: string)
     // inconsistent so schema might be renamed for better semantics.
     sizeBytes: row.message.sizeOctets,
     flags: row.message.flags,
+    encrypted: row.message.encrypted,
     attachments: row.message.attachments,
   };
   await upsertSyncedMessage(meili, syncedMessage, indexUid);

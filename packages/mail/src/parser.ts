@@ -145,3 +145,46 @@ function normalizeContentId(raw: string | undefined): string | null {
     trimmed.startsWith("<") && trimmed.endsWith(">") ? trimmed.slice(1, -1) : trimmed;
   return stripped.length === 0 ? null : stripped;
 }
+
+/**
+ * True when the top-level BODYSTRUCTURE node matches an end-to-end encrypted
+ * envelope shape. Detection is purely structural - we never read the encrypted
+ * blob, just notice the wrapper. Returns `false` for missing input.
+ *
+ * Recognized shapes:
+ * - `multipart/encrypted` (RFC 3156 - PGP/MIME). Bare type match: RFC 3156
+ *   requires `protocol="application/pgp-encrypted"`, but in practice no
+ *   other scheme uses `multipart/encrypted`, and a missing or non-conforming
+ *   `protocol` parameter should not cause a false-negative.
+ * - `application/pkcs7-mime` (or the legacy `application/x-pkcs7-mime` form
+ *   pre-RFC 2633 Outlook still emits) with an `smime-type` parameter of
+ *   `enveloped-data` or `authEnveloped-data` (RFC 8551 / RFC 9750).
+ *
+ * Top-level only by design. Real-world encrypted mail wraps the whole message;
+ * nested encrypted parts (e.g. a `multipart/mixed` containing one encrypted child)
+ * are rare and out of scope for this marker.
+ *
+ * NOTE: `multipart/signed` (cleartext-renderable detached signature) returns
+ * `false` and renders normally. `application/pkcs7-mime; smime-type=signed-data`
+ * (opaque-signed) ALSO returns `false` even though its body is unrenderable
+ * without CMS decoding (RFC 8551 #3.5.1) - the field is strictly an
+ * encryption marker, not a "renderable" marker. A separate affordance for
+ * opaque-signed bodies is out of scope here.
+ */
+export function isEncryptedBodyStructure(top: MessageStructureObject | undefined): boolean {
+  if (!top) return false;
+  const type = top.type.toLowerCase();
+  if (type === "multipart/encrypted") return true;
+  if (type === "application/pkcs7-mime" || type === "application/x-pkcs7-mime") {
+    // RFC 2045 paramater values are case-sensitive by default and RFC 8551 does
+    // not declare otherwise, so this is real-world leniency, not conformance.
+    const smimeType = top.parameters?.["smime-type"]?.toLowerCase();
+    // Fail-closed for `application/pkcs7-mime` without an `smime-type` parameter
+    // (when we can't tell what is inside, default to the "not encrypted"). The
+    // same Content-Type also carries `signed-data` (a signature wrapped together
+    // with the content opaque but not encrypted), `certs-only` (just certificates
+    // being shared), and `compressed-data`.
+    return smimeType === "enveloped-data" || smimeType === "authenveloped-data";
+  }
+  return false;
+}

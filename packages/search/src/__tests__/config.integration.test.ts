@@ -34,6 +34,7 @@ describe("ensureMeilisearchConfig", () => {
       "receivedDate",
       "sizeBytes",
       "flags",
+      "encrypted",
     ]);
     expect(settings.sortableAttributes).toEqual(["receivedDate", "sizeBytes"]);
   });

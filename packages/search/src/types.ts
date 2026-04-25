@@ -40,6 +40,11 @@ export interface MessageDoc {
   sizeBytes: number;
   /** IMAP system and keyword flags (e.g. `\Seen`, `\Flagged`). */
   flags: string[];
+  /**
+   * True when the message body is end-to-end encrypted. When true,
+   * `bodyText` and `bodyHtml` are never populated by the body-fetch stage.
+   */
+  encrypted: boolean;
 
   attachments?: AttachmentMetadata[];
   bodyText?: string;

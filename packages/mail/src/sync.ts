@@ -4,7 +4,7 @@ import type { ImapFlow, MessageAddressObject } from "imapflow";
 import type { ImapCredentials } from "./connection";
 
 import { withImapConnection } from "./connection";
-import { parseAttachments } from "./parser";
+import { isEncryptedBodyStructure, parseAttachments } from "./parser";
 
 // ---------------------------------------------------------------------------
 // Types and interfaces
@@ -269,6 +269,7 @@ async function fetchMessages(
         msg.internalDate instanceof Date ? msg.internalDate : new Date(msg.internalDate as string),
       sizeOctets: msg.size ?? 0,
       attachments: parseAttachments(msg.bodyStructure),
+      encrypted: isEncryptedBodyStructure(msg.bodyStructure),
     });
   }
 

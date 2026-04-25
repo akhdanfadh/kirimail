@@ -442,6 +442,52 @@ describe("syncMailboxes", () => {
     expect(isDescendantPart(innerPdf.partPath, wrapper.partPath)).toBe(true);
   });
 
+  it("flags multiplart/encrypted messages via BODYSTRUCTURE", async () => {
+    // Pin imapflow's BODYSTRUCTURE parsing of an encrypted envelope: a future
+    // imapflow version that surfaces type names or parameters differently would
+    // otherwise let sync silently produce `encrypted: false` for every encrypted
+    // message. Synthetic shape only - no real PGP keys involved; the marker is
+    // purely structural per RFC 3156.
+    await withImapConnection(creds(), (client) => client.mailboxCreate("EncryptedTest"));
+
+    const rawEncrypted = Buffer.from(
+      [
+        "From: sender@localhost",
+        `To: ${creds().user}@localhost`,
+        "Subject: Encrypted fixture",
+        "Message-ID: <encrypted-001@test.localhost>",
+        "Date: " + new Date().toUTCString(),
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/encrypted; protocol="application/pgp-encrypted"; boundary="enc-bdy"',
+        "",
+        "--enc-bdy",
+        "Content-Type: application/pgp-encrypted",
+        "Content-Description: PGP/MIME version identification",
+        "",
+        "Version: 1",
+        "--enc-bdy",
+        'Content-Type: application/octet-stream; name="encrypted.asc"',
+        'Content-Disposition: inline; filename="encrypted.asc"',
+        "",
+        "-----BEGIN PGP MESSAGE-----",
+        Buffer.from("synthetic-encrypted-payload").toString("base64"),
+        "-----END PGP MESSAGE-----",
+        "--enc-bdy--",
+        "",
+      ].join("\r\n"),
+    );
+
+    await withImapConnection(creds(), async (client) => {
+      await client.append("EncryptedTest", rawEncrypted, []);
+    });
+
+    const result = await syncOne("EncryptedTest", null);
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]!.encrypted).toBe(true);
+    // Filtered protocol-structural children stay out of the attachment list.
+    expect(result.messages[0]!.attachments).toEqual([]);
+  });
+
   it("skips nonexistent mailbox and continues syncing remaining mailboxes", async () => {
     await withImapConnection(creds(), (client) => client.mailboxCreate("ExistsOk"));
     await seedMessage(creds(), { headers: { subject: "Survivor" }, mailbox: "ExistsOk" });

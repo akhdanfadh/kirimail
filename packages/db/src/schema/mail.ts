@@ -128,6 +128,7 @@ export const messages = pgTable(
     // Per-copy IMAP metadata
     flags: jsonb("flags").$type<string[]>().notNull().default([]),
     attachments: jsonb("attachments").$type<AttachmentMetadata[]>().notNull().default([]),
+    encrypted: boolean("encrypted").notNull().default(false),
     internalDate: timestamp("internal_date", { withTimezone: true }).notNull(),
     sizeOctets: integer("size_octets").notNull().default(0),
 

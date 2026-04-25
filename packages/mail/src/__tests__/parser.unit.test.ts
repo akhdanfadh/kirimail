@@ -2,7 +2,7 @@ import type { MessageStructureObject } from "imapflow";
 
 import { describe, expect, it } from "vitest";
 
-import { parseAttachments } from "../parser";
+import { isEncryptedBodyStructure, parseAttachments } from "../parser";
 
 // ---------------------------------------------------------------------------
 // Fixture builders - match imapflow's MessageStructureObject shape literally
@@ -486,5 +486,92 @@ describe("parseAttachments", () => {
     ]);
 
     expect(parseAttachments(tree)[0]?.disposition).toBeNull();
+  });
+});
+
+describe("isEncryptedBodyStructure", () => {
+  it("returns false for undefined input", () => {
+    expect(isEncryptedBodyStructure(undefined)).toBe(false);
+  });
+
+  it("flags multipart/encrypted as encrypted (PGP/MIME)", () => {
+    // RFC 3156: top-level container for OpenPGP-encrypted mail. Children
+    // are application/pgp-encrypted control + application/octet-stream blob;
+    // the marker is the wrapper, not the children.
+    const tree = multipartEncrypted([
+      { part: "1", type: "application/pgp-encrypted", size: 11 },
+      { part: "2", type: "application/octet-stream", size: 5000 },
+    ]);
+    expect(isEncryptedBodyStructure(tree)).toBe(true);
+  });
+
+  it("does NOT flag multipart/signed as encrypted", () => {
+    // Sibling family of multipart/encrypted but the body is cleartext -
+    // signed-only messages render normally and need no UI affordance.
+    // Guards against matching multipart/* too broadly.
+    const tree = multipartSigned([
+      textPlain(),
+      { part: "2", type: "application/pgp-signature", size: 512 },
+    ]);
+    expect(isEncryptedBodyStructure(tree)).toBe(false);
+  });
+
+  it("flags application/pkcs7-mime with smime-type=enveloped-data as encrypted (S/MIME)", () => {
+    // RFC 8551: S/MIME enveloped-data wraps the entire message in a single
+    // pkcs7 leaf. The smime-type Content-Type parameter is the discriminator.
+    const tree: MessageStructureObject = {
+      type: "application/pkcs7-mime",
+      size: 4096,
+      parameters: { "smime-type": "enveloped-data", name: "smime.p7m" },
+      disposition: "attachment",
+      dispositionParameters: { filename: "smime.p7m" },
+    };
+    expect(isEncryptedBodyStructure(tree)).toBe(true);
+  });
+
+  it("does NOT flag application/pkcs7-mime with smime-type=signed-data", () => {
+    // Same Content-Type, different smime-type - signed-only S/MIME has a
+    // cleartext body. Guards against forgetting to read the parameter.
+    const tree: MessageStructureObject = {
+      type: "application/pkcs7-mime",
+      size: 4096,
+      parameters: { "smime-type": "signed-data", name: "smime.p7m" },
+    };
+    expect(isEncryptedBodyStructure(tree)).toBe(false);
+  });
+
+  it("flags application/pkcs7-mime with smime-type=authEnveloped-data as encrypted", () => {
+    // RFC 5083 / RFC 8551 authenticated-encryption variant. Distinct positive
+    // code path from enveloped-data.
+    const tree: MessageStructureObject = {
+      type: "application/pkcs7-mime",
+      size: 4096,
+      parameters: { "smime-type": "authEnveloped-data" },
+    };
+    expect(isEncryptedBodyStructure(tree)).toBe(true);
+  });
+
+  it("flags the legacy application/x-pkcs7-mime form (pre-RFC 2633 Outlook)", () => {
+    // Pre-2003 Outlook emits the x- prefixed type. The existing
+    // isProtocolPart filter already accepts application/x-pkcs7-signature
+    // for the multipart/signed case, so encrypted-side handling stays
+    // symmetric.
+    const tree: MessageStructureObject = {
+      type: "application/x-pkcs7-mime",
+      size: 4096,
+      parameters: { "smime-type": "enveloped-data", name: "smime.p7m" },
+    };
+    expect(isEncryptedBodyStructure(tree)).toBe(true);
+  });
+
+  it("does NOT flag application/pkcs7-mime when smime-type parameter is missing", () => {
+    // Fail-closed: RFC 8551 requires smime-type, but a non-conforming server
+    // must not silently get its pkcs7 payload flagged as encrypted - the
+    // same Content-Type also covers signed and CMS detached signatures.
+    const tree: MessageStructureObject = {
+      type: "application/pkcs7-mime",
+      size: 4096,
+    };
+    expect(isEncryptedBodyStructure(tree)).toBe(false);
   });
 });

@@ -281,6 +281,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     expect(doc!.sizeBytes).toBe(1234);
     expect(doc!.receivedDate).toBe(Math.floor(new Date("2026-01-01T00:00:00Z").getTime() / 1000));
     expect(doc!.attachments).toEqual(attachments);
+    expect(doc!.encrypted).toBe(false);
 
     const consumer = await consumerRow(eventId);
     expect(consumer?.lastConsumedAt).toBeInstanceOf(Date);

@@ -118,6 +118,7 @@ export function buildFetchedMessage(overrides?: {
   internalDate?: Date;
   sizeOctets?: number;
   attachments?: AttachmentMetadata[];
+  encrypted?: boolean;
 }): FetchedMessage {
   const uid = overrides?.uid ?? uidCounter++;
   return {
@@ -140,5 +141,6 @@ export function buildFetchedMessage(overrides?: {
     internalDate: overrides?.internalDate ?? new Date(),
     sizeOctets: overrides?.sizeOctets ?? 1024,
     attachments: overrides?.attachments ?? [],
+    encrypted: overrides?.encrypted ?? false,
   };
 }

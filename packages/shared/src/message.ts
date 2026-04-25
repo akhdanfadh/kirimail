@@ -158,4 +158,15 @@ export interface FetchedMessage {
    * array (never absent) when the message has no attachment leaves.
    */
   attachments: AttachmentMetadata[];
+  /**
+   * True when the top-level BODYSTRUCTURE matches an end-to-end encrypted
+   * envelope shape: `multipart/encrypted` (PGP/MIME, RFC 3156) or
+   * `application/pkcs7-mime` (or its legacy `x-pkcs7-mime` form) with
+   * `smime-type=enveloped-data` / `authEnveloped-data` (S/MIME, RFC 8551 / RFC 9750).
+   *
+   * NOTE: Structural marker only - we do not decrypt currently; the body
+   * bytes and any nested attachments stay opaque to us. Subject and other
+   * envelope headers remain cleartext per both RFCs.
+   */
+  encrypted: boolean;
 }

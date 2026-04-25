@@ -156,6 +156,32 @@ describe("applyMailboxSync", () => {
     expect(withoutAttachments!.attachments).toEqual([]);
   });
 
+  it("round-trips encrypted flag and defaults to false on insert", async () => {
+    // Two messages: one encrypted, one default. Asserts both the column round-trip
+    // (true persists as true) and the default (omitting the override stores false).
+    // Default-false is the load-bearing case since most messages take that branch.
+    const synced = [
+      buildFetchedMessage({ uid: 20, subject: "Encrypted body", encrypted: true }),
+      buildFetchedMessage({ uid: 21, subject: "Plain body" }),
+    ];
+
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      synced,
+      { ...baseCursor, uidNext: 22, messageCount: 2 },
+      null,
+      null,
+    );
+
+    const rows = await db.select().from(messages).where(eq(messages.mailboxId, mailboxId));
+    const encryptedRow = rows.find((r) => r.subject === "Encrypted body");
+    const plainRow = rows.find((r) => r.subject === "Plain body");
+
+    expect(encryptedRow!.encrypted).toBe(true);
+    expect(plainRow!.encrypted).toBe(false);
+  });
+
   it("is idempotent when re-applied with the same data", async () => {
     const synced = [buildFetchedMessage({ uid: 1 }), buildFetchedMessage({ uid: 2 })];
     const cursor = { ...baseCursor, uidNext: 3, messageCount: 2 };

@@ -22,8 +22,10 @@ type IndexableAttribute = keyof MessageDoc | `attachments.${keyof AttachmentMeta
 /** Index settings applied by {@link ensureMeilisearchConfig}. */
 const MESSAGES_INDEX_SETTINGS: Settings = {
   // Ordered by descending relevance - earlier entries weigh more in scoring, so reorder with care.
-  // NOTE: any change here (reorder or set change) triggers a full reindex on next boot,
-  // since Meilisearch re-tokenizes every document when searchableAttributes shifts.
+  // NOTE: searchableAttributes changes (reorder or set change) re-tokenize every document on
+  // next boot - Meilisearch rebuilds the inverted index. filterableAttributes changes are
+  // cheaper (they rebuild facet databases only, not the inverted index) but still scan all
+  // documents at startup; not free at scale.
   searchableAttributes: [
     "subject",
     "from",
@@ -40,6 +42,7 @@ const MESSAGES_INDEX_SETTINGS: Settings = {
     "receivedDate",
     "sizeBytes",
     "flags",
+    "encrypted",
   ] satisfies IndexableAttribute[],
   sortableAttributes: ["receivedDate", "sizeBytes"] satisfies IndexableAttribute[],
   // NOTE: `displayedAttributes` left at default (`["*"]`) so `getDocument(id)`
