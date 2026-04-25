@@ -9,6 +9,7 @@ import {
   listUnconsumedDomainEvents,
   markDomainEventConsumed,
   markDomainEventFailed,
+  MAX_CONSECUTIVE_FAILURES,
 } from "@kirimail/db";
 import * as schema from "@kirimail/db/schema";
 import {
@@ -29,29 +30,6 @@ export const EVENT_DISPATCHER_QUEUE = "event-dispatcher";
 // ---------------------------------------------------------------------------
 // Queue registration
 // ---------------------------------------------------------------------------
-
-// TODO: We don't warn automatically when the same event keeps failing.
-// Finding these "poison" events today is a manual query:
-//
-//   SELECT * FROM domain_event_consumers
-//   WHERE last_error IS NOT NULL ORDER BY attempts DESC;
-//
-// Why we can't just auto-warn on `attempts` crossing a threshold:
-// that counter counts EVERY attempt, successes included. A flaky event can hit the
-// threshold value during a success and skip past it, e.g. fails 9 times (attempts=9),
-// succeeds once (attempts=10), fails again (attempts=11). A "warn when attempts=10
-// AND last failed" rule never catches the moment because attempts=10 was a success.
-//
-// There's also a starvation hazard. The SQL fetch returns oldest events first,
-// BATCH_SIZE at a time. If 100+ poison events sit at the head of the queue, every
-// tick is 100% poison and `consumed=0`, so the backlog self-enqueue stops firing.
-// The 5-min cron just re-fetches the same poison head. Healthy events behind them
-// never get processed - search stays stale for those too, not just for the broken ones.
-//
-// Both fixed by one change: add a `consecutive_failures` column to `domain_event_consumers`,
-// reset to 0 on success and incremented on failure. That gives a counter we can threshold
-// cleanly (no skipping past values during success), and the SQL fetch can also filter on
-// `WHERE consecutive_failures < N` so poison stops blocking the queue head.
 
 const CRON_SCHEDULE = "*/5 * * * *";
 const BATCH_SIZE = 100;
@@ -238,6 +216,15 @@ export async function handleEventDispatcher(
       } else {
         failed++;
         console.error(`[${EVENT_DISPATCHER_QUEUE}] event ${event.id} failed: ${message}`);
+        if (failedRow.consecutiveFailures === MAX_CONSECUTIVE_FAILURES) {
+          // At this point, future `listUnconsumedDomainEvents` will stop returning this event.
+          console.warn(
+            `[${EVENT_DISPATCHER_QUEUE}] event ${event.id} reached ` +
+              `consecutive_failures=${MAX_CONSECUTIVE_FAILURES} ` +
+              `for consumer "${MEILISEARCH_CONSUMER_NAME}"; now invisible to scans. ` +
+              `last_error: ${message}`,
+          );
+        }
       }
       continue;
     }

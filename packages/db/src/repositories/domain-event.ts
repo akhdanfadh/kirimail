@@ -18,7 +18,7 @@
 import type { DomainAggregateType, DomainEventType } from "@kirimail/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 
 import type * as schema from "../schema";
 
@@ -35,6 +35,23 @@ function truncateErrorMessage(msg: string): string {
   if (msg.length <= MAX_LAST_ERROR_LENGTH) return msg;
   return msg.slice(0, MAX_LAST_ERROR_LENGTH - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
 }
+
+/**
+ * Threshold at which a `domain_event_consumers` row stops being returned by
+ * {@link listUnconsumedDomainEvents}. Once a consumer fails the same event
+ * this many times in a row, the event becomes invisible to scans for that
+ * consumer until something resets the counter. Without this filter, a long
+ * run of "poison" events (events that fail every retry, usually from malformed
+ * data or a permanent bug) at the head of the queue would eat the whole batch
+ * every tick and starve healthy events behind them.
+ *
+ * NOTE: no programmatic recovery path for a poison-isolated event. Operators
+ * unblock by either driving a successful consume (resets the counter and marks
+ * the event done) or manually resetting the counter so the next tick retries.
+ * Worth a dedicated helper once an operator surface (admin panel, CLI, etc.)
+ * ships with a real call site.
+ */
+export const MAX_CONSECUTIVE_FAILURES = 5;
 
 /** Input accepted by {@link insertDomainEvent} and {@link insertDomainEvents}. */
 export interface InsertDomainEventInput {
@@ -71,8 +88,11 @@ export async function insertDomainEvents(db: Db, inputs: InsertDomainEventInput[
 /**
  * Return the oldest events in `eventTypes` that `consumerName` hasn't
  * successfully processed yet, up to `batchSize`. An event counts as
- * unconsumed when its `domain_event_consumers` row is missing or has
- * `last_consumed_at IS NULL` (last attempt failed).
+ * unconsumed when one of:
+ * - its `domain_event_consumers` row is missing entirely (the consumer
+ *   has never tried this event), or
+ * - the row exists, the most recent attempt failed, and the consecutive-failure
+ *   counter is still below the poison threshold ({@link MAX_CONSECUTIVE_FAILURES}).
  *
  * Pass exactly the event types your consumer's `switch` handles. A
  * wider allowlist breaks the moment a new event type lands in another
@@ -128,7 +148,17 @@ export async function listUnconsumedDomainEvents(
       .where(
         and(
           inArray(domainEvents.eventType, eventTypes),
-          or(isNull(domainEventConsumers.eventId), isNull(domainEventConsumers.lastConsumedAt)),
+          // The threshold check has to sit inside the second branch because
+          // LEFT JOIN leaves `consecutive_failures` NULL when no row exists,
+          // and `NULL < 5` evaluates NULL (false) - a flat AND would silently
+          // hide every never-attempted event.
+          or(
+            isNull(domainEventConsumers.eventId),
+            and(
+              isNull(domainEventConsumers.lastConsumedAt),
+              lt(domainEventConsumers.consecutiveFailures, MAX_CONSECUTIVE_FAILURES),
+            ),
+          ),
         ),
       )
       // NOTE: The tiebreak on `id` is stable between calls but not causal.
@@ -144,9 +174,9 @@ export async function listUnconsumedDomainEvents(
 /**
  * Record that `consumerName` successfully processed `eventId`.
  *
- * Uses an upsert. Both paths set `lastConsumedAt` to now, clear
- * `lastError`, and bump `attempts`, so a success that follows
- * earlier failures still ends with the right attempt count.
+ * Uses an upsert. Both paths set `lastConsumedAt` to now, clear `lastError`,
+ * bump `attempts`, and reset `consecutiveFailures`. A success that follows
+ * earlier failures still ends with the right lifetime attempt count.
  */
 export async function markDomainEventConsumed(db: Db, eventId: string, consumerName: string) {
   const now = new Date();
@@ -158,6 +188,7 @@ export async function markDomainEventConsumed(db: Db, eventId: string, consumerN
       lastConsumedAt: now,
       lastError: null,
       attempts: 1,
+      consecutiveFailures: 0,
     })
     // No `where` guard: success is terminal under at-least-once delivery ("success wins").
     // A retry that succeeds after a prior failure always overwrites the failed state.
@@ -169,6 +200,7 @@ export async function markDomainEventConsumed(db: Db, eventId: string, consumerN
         lastConsumedAt: now,
         lastError: null,
         attempts: sql`${domainEventConsumers.attempts} + 1`,
+        consecutiveFailures: 0,
       },
     })
     .returning();
@@ -179,14 +211,17 @@ export async function markDomainEventConsumed(db: Db, eventId: string, consumerN
  * Record that `consumerName` failed to process `eventId`.
  *
  * Uses an upsert. Writes the truncated `error`, bumps `attempts`,
- * and leaves `lastConsumedAt` NULL so {@link listUnconsumedDomainEvents}
- * offers this event again on the next tick.
+ * bumps `consecutiveFailures`, and leaves `lastConsumedAt` NULL so
+ * {@link listUnconsumedDomainEvents} offers this event again on the
+ * next tick.
  *
  * Guarded against "un-consuming" a success: if the row is already
  * consumed, the UPDATE is skipped and the function returns `undefined`.
  * This covers the race where a slow worker reports failure AFTER
  * another attempt has already succeeded. Callers treat `undefined`
- * as "a later attempt already won."
+ * as "a later attempt already won." Because the guard skips the whole
+ * UPDATE, `consecutiveFailures` is also untouched in that case - a
+ * stale failure can't push a healthy event toward isolation.
  */
 export async function markDomainEventFailed(
   db: Db,
@@ -203,6 +238,7 @@ export async function markDomainEventFailed(
       lastConsumedAt: null,
       lastError: truncated,
       attempts: 1,
+      consecutiveFailures: 1,
     })
     .onConflictDoUpdate({
       target: [domainEventConsumers.eventId, domainEventConsumers.consumerName],
@@ -210,6 +246,7 @@ export async function markDomainEventFailed(
         lastConsumedAt: null,
         lastError: truncated,
         attempts: sql`${domainEventConsumers.attempts} + 1`,
+        consecutiveFailures: sql`${domainEventConsumers.consecutiveFailures} + 1`,
       },
       where: isNull(domainEventConsumers.lastConsumedAt),
     })

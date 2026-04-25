@@ -13,7 +13,7 @@ import {
   resetTestIndex,
   TEST_INDEX_UID,
 } from "#test/helpers";
-import { insertDomainEvent, markDomainEventConsumed } from "@kirimail/db";
+import { insertDomainEvent, markDomainEventConsumed, MAX_CONSECUTIVE_FAILURES } from "@kirimail/db";
 import * as schema from "@kirimail/db/schema";
 import { testCredentials, seedMessage } from "@kirimail/mail/testing";
 import {
@@ -25,7 +25,7 @@ import {
 import { and, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { PgBoss } from "pg-boss";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { registerEventDispatcher, registerSyncEmailAccount } from "..";
 import {
@@ -376,6 +376,41 @@ describe("handleEventDispatcher (direct invocation)", () => {
       batchSize: poisonBatch,
     });
     expect(result).toEqual({ consumed: 0, failed: poisonBatch, skipped: 0 });
+  });
+
+  it("warns once when a poison event reaches MAX_CONSECUTIVE_FAILURES", async () => {
+    // Operator-facing signal that an event is now invisible to the
+    // scan - the only one-shot signal in v0.1.x. If the dispatcher's
+    // `=== MAX_CONSECUTIVE_FAILURES` check ever drifts (typo, wrong
+    // constant, accidentally compared against `attempts`), poison
+    // events would sit invisible with no operator alert.
+    const { messageId } = await seedMessageRow();
+    const eventId = await seedSyncedEvent(messageId);
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const boundaryPattern = new RegExp(
+      `event ${eventId}.*reached consecutive_failures=${MAX_CONSECUTIVE_FAILURES}`,
+    );
+
+    try {
+      for (let tick = 1; tick <= MAX_CONSECUTIVE_FAILURES; tick++) {
+        await handleEventDispatcher({
+          db,
+          meili: meiliAllPoison(),
+          indexUid: TEST_INDEX_UID,
+          batchSize: TEST_BATCH_SIZE,
+        });
+      }
+
+      const boundaryWarns = warnSpy.mock.calls.filter((args) =>
+        boundaryPattern.test(String(args[0] ?? "")),
+      );
+      expect(boundaryWarns).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 
   it("treats unknown MeilisearchError subclasses as per-event, not infra", async () => {

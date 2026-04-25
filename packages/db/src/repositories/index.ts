@@ -8,6 +8,7 @@ export {
   listUnconsumedDomainEvents,
   markDomainEventConsumed,
   markDomainEventFailed,
+  MAX_CONSECUTIVE_FAILURES,
 } from "./domain-event";
 export { getEmailAccountById, listAllEmailAccountIds } from "./email-account";
 export { applyMailboxSync, findMailboxPathByRole, reconcileMailboxes } from "./mailbox";

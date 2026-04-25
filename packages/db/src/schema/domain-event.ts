@@ -91,6 +91,19 @@ export const domainEventConsumers = pgTable(
      * inserts that forget to set it.
      */
     attempts: integer("attempts").notNull().default(0),
+    /**
+     * Length of the current unbroken failure streak. `0` when the most recent attempt
+     * succeeded or no attempt has been recorded yet; otherwise `>= 1` and equal to
+     * the count of consecutive failures at the tail of this row's history.
+     *
+     * Distinct from `attempts`: that one counts every recorded attempt (successes and
+     * failures alike), so a flaky event can hit any given value during a success and
+     * skip past it - "alarm at N" misses the moment because N might land on a success.
+     * This counter only ticks up on failures and resets to `0` on the next success,
+     * so reaching value `N` always means "N failures in a row" - safe to compare
+     * against a fixed threshold.
+     */
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
     /** When the consumer first attempted this event. */
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     /** Refreshed on every write - effectively the timestamp of the last attempt. */

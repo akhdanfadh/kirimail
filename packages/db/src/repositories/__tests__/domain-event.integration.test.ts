@@ -16,6 +16,7 @@ import {
   listUnconsumedDomainEvents,
   markDomainEventConsumed,
   markDomainEventFailed,
+  MAX_CONSECUTIVE_FAILURES,
 } from "../domain-event";
 
 type Db = NodePgDatabase<typeof schema>;
@@ -252,6 +253,112 @@ describe("domain-event repository", () => {
       expect(batch.map((e) => e.id)).toEqual([smallerId, largerId]);
     });
 
+    it("filters out events whose consecutive_failures has reached the threshold", async () => {
+      // Poison-event isolation. Without this, a contiguous run of
+      // failing events at the head of the queue eats every batch
+      // forever and starves healthy events behind them.
+      //
+      // Seed five events ordered by createdAt; push the last two
+      // to MAX_CONSECUTIVE_FAILURES and assert the scan returns
+      // only the first three.
+      const events = await seedEventsInOrder([
+        { aggregateId: "msg-0" },
+        { aggregateId: "msg-1" },
+        { aggregateId: "msg-2" },
+        { aggregateId: "msg-3" },
+        { aggregateId: "msg-4" },
+      ]);
+      for (const poisonId of [events[3]!.id, events[4]!.id]) {
+        for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i++) {
+          await markDomainEventFailed(db, poisonId, "meilisearch-indexer", "boom");
+        }
+      }
+
+      const batch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
+      expect(batch.map((e) => e.id)).toEqual([events[0]!.id, events[1]!.id, events[2]!.id]);
+    });
+
+    it("isolates poison events per consumer - one consumer's threshold doesn't hide the event from another", async () => {
+      // The threshold filter joins on `consumer_name` via the LEFT
+      // JOIN, so isolation must scope to (event, consumer) - not just
+      // event. Production scenario: the meilisearch-indexer chokes on
+      // a malformed event 5 times and gets isolated. Later, the rules
+      // engine ships (v0.1.3) and starts processing message events
+      // for the first time. It must still see this event, because
+      // it has no prior failures recorded for itself. If isolation
+      // ever leaked across consumers, a new consumer would inherit
+      // every other consumer's poison list on first boot.
+      const event = await insertDomainEvent(db, buildInput());
+      for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i++) {
+        await markDomainEventFailed(db, event!.id, "meilisearch-indexer", "boom");
+      }
+
+      const indexerBatch = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
+      expect(indexerBatch.map((e) => e.id)).toEqual([]);
+
+      const rulesBatch = await listUnconsumedDomainEvents(
+        db,
+        "rules-engine",
+        ["message.synced"],
+        10,
+      );
+      expect(rulesBatch.map((e) => e.id)).toEqual([event!.id]);
+    });
+
+    it("re-offers an isolated event after an operator resets consecutive_failures", async () => {
+      // Recovery path documented on MAX_CONSECUTIVE_FAILURES. Once
+      // an event reaches the threshold, the operator fixes the
+      // underlying cause and runs:
+      //   UPDATE domain_event_consumers SET consecutive_failures = 0
+      //   WHERE event_id = $1 AND consumer_name = $2;
+      // The row's last_consumed_at stays NULL (it was never
+      // successfully processed), so the scan offers the event again
+      // on its next call. If the filter ever shifted to use a
+      // different signal (e.g. attempts), this manual unblock would
+      // silently stop working and "isolation" would mean "permanent
+      // drop" instead of "pause until fixed".
+      const event = await insertDomainEvent(db, buildInput());
+      for (let i = 0; i < MAX_CONSECUTIVE_FAILURES; i++) {
+        await markDomainEventFailed(db, event!.id, "meilisearch-indexer", "boom");
+      }
+
+      const isolated = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
+      expect(isolated.map((e) => e.id)).toEqual([]);
+
+      await db
+        .update(domainEventConsumers)
+        .set({ consecutiveFailures: 0 })
+        .where(
+          and(
+            eq(domainEventConsumers.eventId, event!.id),
+            eq(domainEventConsumers.consumerName, "meilisearch-indexer"),
+          ),
+        );
+
+      const reoffered = await listUnconsumedDomainEvents(
+        db,
+        "meilisearch-indexer",
+        ["message.synced"],
+        10,
+      );
+      expect(reoffered.map((e) => e.id)).toEqual([event!.id]);
+    });
+
     it("filters out events whose eventType is outside the allowlist", async () => {
       // Pins the point of the `eventTypes` allowlist: a consumer that
       // only knows how to handle `message.synced` must never be handed
@@ -308,6 +415,28 @@ describe("domain-event repository", () => {
       expect(row!.attempts).toBe(2);
     });
 
+    it("resets consecutive_failures to 0 after a streak of failures", async () => {
+      // The whole point of the counter: once a consumer succeeds, the
+      // event is no longer poison and must become visible to scans
+      // again. If the upsert's UPDATE branch ever stopped writing the
+      // reset (e.g. someone "optimizes" by dropping the field from the
+      // SET clause because attempts already covers it), an
+      // operator-recovered event would stay invisible forever.
+      const event = await insertDomainEvent(db, buildInput());
+      await markDomainEventFailed(db, event!.id, "meilisearch-indexer", "one");
+      await markDomainEventFailed(db, event!.id, "meilisearch-indexer", "two");
+      const beforeConsume = await markDomainEventFailed(
+        db,
+        event!.id,
+        "meilisearch-indexer",
+        "three",
+      );
+      expect(beforeConsume!.consecutiveFailures).toBe(3);
+
+      const consumed = await markDomainEventConsumed(db, event!.id, "meilisearch-indexer");
+      expect(consumed!.consecutiveFailures).toBe(0);
+    });
+
     it("is idempotent across repeat calls on an already-consumed row", async () => {
       // At-least-once means the dispatcher may re-fire consume on an
       // already-processed event (pg-boss infra retries after handler
@@ -348,6 +477,22 @@ describe("domain-event repository", () => {
       expect(row!.lastError!.endsWith("...")).toBe(true);
     });
 
+    it("starts consecutive_failures at 1 on first failure and bumps by 1 each retry", async () => {
+      // Pins the counter that drives poison-event isolation. attempts
+      // and consecutiveFailures move together during a failure streak,
+      // but they're separate columns - the UPDATE SET clause must
+      // increment both. A future refactor that aliased one to the other
+      // would silently break the threshold filter.
+      const event = await insertDomainEvent(db, buildInput());
+      const first = await markDomainEventFailed(db, event!.id, "meilisearch-indexer", "one");
+      expect(first!.consecutiveFailures).toBe(1);
+      expect(first!.attempts).toBe(1);
+
+      const second = await markDomainEventFailed(db, event!.id, "meilisearch-indexer", "two");
+      expect(second!.consecutiveFailures).toBe(2);
+      expect(second!.attempts).toBe(2);
+    });
+
     it("overwrites the error on a subsequent failure and bumps attempts", async () => {
       // last_error is current state, not history. An ops view
       // showing a stale reason from two retries ago would be worse
@@ -377,14 +522,20 @@ describe("domain-event repository", () => {
     });
 
     it("rejects an already-consumed row (resurrection guard)", async () => {
-      // A late failure report from a slow worker must not un-consume a
-      // row that another attempt has already succeeded on. The UPDATE
-      // is gated on `lastConsumedAt IS NULL`, returns `undefined`, and
-      // leaves the row untouched. `updatedAt` must also not tick: a
-      // refactor that weakened the SET clause into a no-op but still
-      // ran the UPDATE would let `$onUpdate` stamp a fresh timestamp
-      // even though no user-visible column changed - looking like
-      // "something happened" on the ops view when nothing did.
+      // A late failure report from a slow worker must not un-consume
+      // a row that another attempt has already succeeded on. The
+      // UPDATE is gated on `lastConsumedAt IS NULL`, returns
+      // `undefined`, and must leave every column untouched:
+      //   - `lastConsumedAt` / `lastError` / `attempts`: a half-
+      //     applied UPDATE would corrupt the consumed state.
+      //   - `updatedAt`: a refactor that weakened the SET clause to a
+      //     no-op but still ran the UPDATE would let `$onUpdate` stamp
+      //     a fresh timestamp, looking like "something happened" on
+      //     the ops view when nothing did.
+      //   - `consecutiveFailures`: with the poison counter, a stale
+      //     failure that slipped past the guard could push a healthy
+      //     event across the threshold post-hoc and re-isolate it on
+      //     a later tick.
       const event = await insertDomainEvent(db, buildInput());
       const consumed = await markDomainEventConsumed(db, event!.id, "meilisearch-indexer");
 
@@ -408,6 +559,7 @@ describe("domain-event repository", () => {
       expect(row!.lastConsumedAt).toEqual(consumed!.lastConsumedAt);
       expect(row!.lastError).toBeNull();
       expect(row!.attempts).toBe(1);
+      expect(row!.consecutiveFailures).toBe(0);
       expect(row!.updatedAt.getTime()).toBe(consumed!.updatedAt.getTime());
     });
   });
