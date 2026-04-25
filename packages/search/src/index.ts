@@ -12,3 +12,13 @@ export {
   upsertMessageFlags,
   upsertSyncedMessage,
 } from "./primitives";
+
+// Re-export meilisearch-js error classes so callers can run `instanceof`
+// checks without taking a direct dependency on the underlying library.
+export {
+  MeilisearchApiError,
+  MeilisearchError,
+  MeilisearchRequestError,
+  MeilisearchRequestTimeOutError,
+  MeilisearchTaskTimeOutError,
+} from "meilisearch";

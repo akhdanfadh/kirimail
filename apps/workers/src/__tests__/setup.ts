@@ -88,6 +88,12 @@ name = "smtprecipient"
 secret = "testpass"
 email.0000 = "smtprecipient@localhost"
 
+[directory."memory".principals.0007]
+class = "individual"
+name = "dispatchuser"
+secret = "testpass"
+email.0000 = "dispatchuser@localhost"
+
 # SMTP submission config for integration tests. must-match-sender=false lets
 # the envelope sender diverge from the authenticated principal's stored email
 # (our helpers use the principal name as fromAddress, not the email). The
@@ -114,6 +120,8 @@ spam-filter = false
 // Vitest provided context
 // ---------------------------------------------------------------------------
 
+const MEILI_MASTER_KEY = "kirimail-test-master-key-1234";
+
 declare module "vitest" {
   export interface ProvidedContext {
     postgresUrl: string;
@@ -121,6 +129,8 @@ declare module "vitest" {
     stalwartImapPort: number;
     stalwartSmtpPort: number;
     encryptionKey: string;
+    meilisearchUrl: string;
+    meiliMasterKey: string;
   }
 }
 
@@ -130,10 +140,11 @@ declare module "vitest" {
 
 let pgContainer: StartedTestContainer;
 let stalwartContainer: StartedTestContainer;
+let meilisearchContainer: StartedTestContainer;
 
 export async function setup(project: TestProject) {
-  // Start both containers in parallel
-  const [pg, stalwart] = await Promise.all([
+  // Start all three containers in parallel
+  const [pg, stalwart, meilisearch] = await Promise.all([
     new GenericContainer("postgres:18")
       .withExposedPorts(5432)
       .withEnvironment({
@@ -164,10 +175,21 @@ export async function setup(project: TestProject) {
       .withStartupTimeout(120_000)
       .withWaitStrategy(Wait.forHealthCheck())
       .start(),
+
+    new GenericContainer("getmeili/meilisearch:v1.42.1")
+      .withExposedPorts(7700)
+      .withEnvironment({
+        MEILI_MASTER_KEY,
+        MEILI_ENV: "development",
+        MEILI_NO_ANALYTICS: "true",
+      })
+      .withWaitStrategy(Wait.forHttp("/health", 7700).forStatusCode(200).withStartupTimeout(60_000))
+      .start(),
   ]);
 
   pgContainer = pg;
   stalwartContainer = stalwart;
+  meilisearchContainer = meilisearch;
 
   // Push Drizzle schema into kirimail_test - used as a template for per-worker
   // databases (CREATE DATABASE ... TEMPLATE) so test files can run in parallel.
@@ -190,8 +212,13 @@ export async function setup(project: TestProject) {
   project.provide("stalwartImapPort", stalwart.getMappedPort(143));
   project.provide("stalwartSmtpPort", stalwart.getMappedPort(587));
   project.provide("encryptionKey", encryptionKey);
+  project.provide(
+    "meilisearchUrl",
+    `http://${meilisearch.getHost()}:${meilisearch.getMappedPort(7700)}`,
+  );
+  project.provide("meiliMasterKey", MEILI_MASTER_KEY);
 }
 
 export async function teardown() {
-  await Promise.all([pgContainer?.stop(), stalwartContainer?.stop()]);
+  await Promise.all([pgContainer?.stop(), stalwartContainer?.stop(), meilisearchContainer?.stop()]);
 }

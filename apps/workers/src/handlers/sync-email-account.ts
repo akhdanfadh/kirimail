@@ -5,6 +5,7 @@ import { applyMailboxSync, db, getEmailAccountById, reconcileMailboxes } from "@
 import { discoverMailboxes, syncMailboxes } from "@kirimail/mail";
 
 import { resolveImapCredentials } from "../credentials";
+import { EVENT_DISPATCHER_QUEUE } from "./event-dispatcher";
 
 /** Register the sync-email-account queue and handler. */
 export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
@@ -31,12 +32,34 @@ export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
       const { emailAccountId } = job.data;
       console.log(`[sync-email-account] starting sync for account ${emailAccountId}`);
 
+      let messagesCreated = 0;
       try {
-        await syncEmailAccount(emailAccountId);
-      } catch (error) {
+        messagesCreated = await syncEmailAccount(emailAccountId);
+      } catch (err) {
         // Log with account context before pg-boss captures the error for retry
-        console.error(`[sync-email-account] account ${emailAccountId} failed:`, error);
-        throw error;
+        console.error(`[sync-email-account] account ${emailAccountId} failed:`, err);
+        throw err;
+      }
+
+      if (messagesCreated > 0) {
+        // Trigger immediate indexing for search, only when the sync wrote new events.
+        // The dispatcher queue's `stately` policy collapses overlapping triggers into
+        // one tick; the 5-min cron picks up any unconsumed events when this push gets lost
+        // or a tick failed. Enqueue failure is logged, not rethrown - sync already committed.
+        //
+        // TODO: this gate is tied to `message.synced` specifically. Today every new message
+        // produces one event, so `messagesCreated > 0` means "events were emitted." When
+        // `applyMailboxSync` starts emitting other event types (e.g. `message.deleted`),
+        // this gate would miss runs that emitted events but created zero messages.
+        // Fix: have `applyMailboxSync` return an `eventsEmitted` count and gate on that.
+        try {
+          await boss.send(EVENT_DISPATCHER_QUEUE, {});
+        } catch (err) {
+          console.error(
+            `[sync-email-account] failed to enqueue ${EVENT_DISPATCHER_QUEUE} (account ${emailAccountId})`,
+            err,
+          );
+        }
       }
     },
   );
@@ -46,17 +69,19 @@ export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
  * Sync a single email account: discover mailboxes, reconcile with DB,
  * fetch message headers over IMAP, and write results to the database.
  *
- * NOTE: Discovery and sync each open a separate IMAP connection. Sharing a
- * single connection would halve TLS+auth overhead, but requires changing the
- * packages/mail API to accept an external connection - deferred to keep the
- * adapter interface simple for now.
+ * Returns the number of new message rows committed across all mailboxes so the caller
+ * can skip downstream triggers (e.g., search-index dispatch) on zero-change syncs.
  */
-export async function syncEmailAccount(accountId: string): Promise<void> {
+// NOTE: Discovery and sync each open a separate IMAP connection. Sharing a
+// single connection would halve TLS+auth overhead, but requires changing the
+// packages/mail API to accept an external connection - deferred to keep the
+// adapter interface simple for now.
+export async function syncEmailAccount(accountId: string): Promise<number> {
   // 1. Fetch account with credentials
   const account = await getEmailAccountById(db, accountId);
   if (!account) {
     console.warn(`[sync-email-account] account ${accountId} not found, skipping`);
-    return;
+    return 0;
   }
 
   // 2. Decrypt IMAP credentials
@@ -68,7 +93,7 @@ export async function syncEmailAccount(accountId: string): Promise<void> {
     console.warn(
       `[sync-email-account] empty discovery for account ${accountId}, skipping reconciliation`,
     );
-    return;
+    return 0;
   }
 
   const { mailboxByPath, inserted, updated, removed } = await reconcileMailboxes(
@@ -91,7 +116,7 @@ export async function syncEmailAccount(accountId: string): Promise<void> {
 
   if (syncInputs.length === 0) {
     console.log(`[sync-email-account] account ${accountId}: no mailboxes to sync`);
-    return;
+    return 0;
   }
 
   // 5. Sync all mailboxes over a single IMAP connection
@@ -146,4 +171,6 @@ export async function syncEmailAccount(accountId: string): Promise<void> {
       `${skipped > 0 ? `, ${skipped} skipped` : ""}, ` +
       `+${totalCreated} -${totalDeleted} messages`,
   );
+
+  return totalCreated;
 }

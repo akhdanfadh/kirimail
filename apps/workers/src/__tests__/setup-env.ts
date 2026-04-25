@@ -19,3 +19,7 @@ await adminPool.end();
 
 process.env.DATABASE_URL = postgresUrl.replace(/\/postgres$/, `/${dbName}`);
 process.env.CREDENTIAL_ENCRYPTION_KEY = inject("encryptionKey");
+// Must be set before any test-file import chain reaches @kirimail/search,
+// which builds a module-level `searchClient` from these values at import time.
+process.env.MEILISEARCH_URL = inject("meilisearchUrl");
+process.env.MEILI_MASTER_KEY = inject("meiliMasterKey");

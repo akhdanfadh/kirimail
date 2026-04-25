@@ -5,6 +5,7 @@ import { closeCachedConnections } from "./caches";
 import { workerEnv } from "./env";
 import {
   registerAppendSent,
+  registerEventDispatcher,
   registerImapCommand,
   registerOutboundReaper,
   registerSendMessage,
@@ -43,6 +44,10 @@ export async function startWorkers(): Promise<WorkerHandle> {
   // Queue registrations - stop boss if registration fails partway through.
   let idlePool: IdlePool | null = null;
   try {
+    // event-dispatcher must register before sync-email-account: the sync
+    // handler enqueues dispatcher ticks on success and boss.send fails for
+    // a queue that doesn't exist.
+    await registerEventDispatcher(boss);
     // sync-email-account must be registered before the idle pool starts
     // (the pool enqueues to this queue).
     await registerSyncEmailAccount(boss);

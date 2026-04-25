@@ -20,6 +20,7 @@
     "@kirimail/env": "workspace:*",
     "@kirimail/mail": "workspace:*",
     "@kirimail/search": "workspace:*",
+    "@kirimail/shared": "workspace:*",
     "@t3-oss/env-core": "^0.13.11",
     "p-limit": "^7.3.0",
     "pg-boss": "^12.15.0",

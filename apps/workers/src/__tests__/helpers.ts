@@ -1,15 +1,23 @@
 import type { ImapCredentials } from "@kirimail/mail";
+import type { Meilisearch } from "@kirimail/search";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
 import * as schema from "@kirimail/db/schema";
 import { encryptCredential, serializeEnvelope } from "@kirimail/mail";
 import { withImapConnection } from "@kirimail/mail/testing";
+import { createSearchClient, ensureMeilisearchConfig } from "@kirimail/search";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { inject } from "vitest";
 
 type Db = NodePgDatabase<typeof schema>;
+
+/**
+ * Per-pid Meilisearch index uid that isolates each vitest worker's writes
+ * from every other worker's. Shared container, pid-scoped index.
+ */
+export const TEST_INDEX_UID = `messages_${process.pid}`;
 
 // ---------------------------------------------------------------------------
 // DB connection
@@ -132,7 +140,7 @@ export async function createEncryptedSmtpIdentity(
     emailAccountId,
     // Stalwart's memory directory authenticates by principal name (e.g.,
     // "smtpsender"), not full email. resolveSmtpCredentials uses fromAddress
-    // as the AUTH user, so we store the principal name here — same pattern
+    // as the AUTH user, so we store the principal name here - same pattern
     // as createEncryptedEmailAccount storing principal name as emailAddress.
     // must-match-sender is disabled in the test Stalwart config so the
     // envelope sender doesn't need to match the principal's registered email.
@@ -174,6 +182,32 @@ export async function seedSentMailbox(
     specialUse: "\\Sent",
   });
   return id;
+}
+
+// ---------------------------------------------------------------------------
+// Meilisearch helpers
+// ---------------------------------------------------------------------------
+
+/** Build a Meilisearch client pointed at the shared test container. */
+export function createTestMeiliClient(): Meilisearch {
+  return createSearchClient({
+    host: inject("meilisearchUrl"),
+    apiKey: inject("meiliMasterKey"),
+  });
+}
+
+/** Apply the production index settings to the per-pid {@link TEST_INDEX_UID}. */
+export async function ensureTestMeilisearchConfig(client: Meilisearch): Promise<void> {
+  await ensureMeilisearchConfig(client, TEST_INDEX_UID);
+}
+
+/**
+ * Drop every document from the per-pid test index and wait for the delete
+ * task to finish. Use in `beforeEach` so tests start from a known-empty
+ * index without re-creating it.
+ */
+export async function resetTestIndex(client: Meilisearch): Promise<void> {
+  await client.index(TEST_INDEX_UID).deleteAllDocuments().waitTask();
 }
 
 // ---------------------------------------------------------------------------
