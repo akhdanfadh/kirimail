@@ -67,13 +67,13 @@ describe("messageId validation (assertMessageId via buildReplyHeaders)", () => {
 
   it("rejects ids missing the RFC 5322 #3.6.4 shape", () => {
     const cases = [
-      "", // falsy guard — programmer bug
+      "", // falsy guard - programmer bug
       "abc@example.com", // missing brackets
       "<>", // empty content
       "<no-at-sign>", // missing @
       "<@example.com>", // empty id-left
       "<abc@>", // empty id-right
-      "<a@b@c>", // multiple @ — ambiguous parse
+      "<a@b@c>", // multiple @ - ambiguous parse
     ];
     for (const messageId of cases) {
       expect(() => buildReplyHeaders({ messageId })).toThrow("must be angle-bracketed");
