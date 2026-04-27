@@ -7,6 +7,7 @@ export { ensureMeilisearchConfig, MESSAGES_INDEX_UID } from "./config";
 export {
   deleteMessageDoc,
   deleteMessagesByEmailAccount,
+  deleteMessagesByMailbox,
   getMessageDoc,
   upsertMessageBody,
   upsertMessageFlags,

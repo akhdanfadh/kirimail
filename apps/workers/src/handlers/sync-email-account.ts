@@ -32,26 +32,20 @@ export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
       const { emailAccountId } = job.data;
       console.log(`[sync-email-account] starting sync for account ${emailAccountId}`);
 
-      let messagesCreated = 0;
+      let eventsEmitted = 0;
       try {
-        messagesCreated = await syncEmailAccount(emailAccountId);
+        eventsEmitted = await syncEmailAccount(emailAccountId);
       } catch (err) {
         // Log with account context before pg-boss captures the error for retry
         console.error(`[sync-email-account] account ${emailAccountId} failed:`, err);
         throw err;
       }
 
-      if (messagesCreated > 0) {
+      if (eventsEmitted > 0) {
         // Trigger immediate indexing for search, only when the sync wrote new events.
         // The dispatcher queue's `stately` policy collapses overlapping triggers into
         // one tick; the 5-min cron picks up any unconsumed events when this push gets lost
         // or a tick failed. Enqueue failure is logged, not rethrown - sync already committed.
-        //
-        // TODO: this gate is tied to `message.synced` specifically. Today every new message
-        // produces one event, so `messagesCreated > 0` means "events were emitted." When
-        // `applyMailboxSync` starts emitting other event types (e.g. `message.deleted`),
-        // this gate would miss runs that emitted events but created zero messages.
-        // Fix: have `applyMailboxSync` return an `eventsEmitted` count and gate on that.
         try {
           await boss.send(EVENT_DISPATCHER_QUEUE, {});
         } catch (err) {
@@ -69,8 +63,10 @@ export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
  * Sync a single email account: discover mailboxes, reconcile with DB,
  * fetch message headers over IMAP, and write results to the database.
  *
- * Returns the number of new message rows committed across all mailboxes so the caller
- * can skip downstream triggers (e.g., search-index dispatch) on zero-change syncs.
+ * Returns the total number of `domain_events` rows emitted by this sync,
+ * across both producer paths: one per inserted message + one per deleted
+ * message, plus one per removed mailbox. The caller uses this count as a
+ * gate to decide whether to wake the dispatcher post-sync.
  */
 // NOTE: Discovery and sync each open a separate IMAP connection. Sharing a
 // single connection would halve TLS+auth overhead, but requires changing the
@@ -96,7 +92,7 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
     return 0;
   }
 
-  const { mailboxByPath, inserted, updated, removed } = await reconcileMailboxes(
+  const { mailboxByPath, inserted, updated, removed, messagesDeleted } = await reconcileMailboxes(
     db,
     accountId,
     mailboxes,
@@ -104,7 +100,8 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
   if (inserted > 0 || updated > 0 || removed > 0) {
     console.log(
       `[sync-email-account] reconciled account ${accountId}: ` +
-        `+${inserted} ~${updated} -${removed} mailbox(es)`,
+        `+${inserted} ~${updated} -${removed} mailbox(es)` +
+        (messagesDeleted > 0 ? `, -${messagesDeleted} message(s) from removed mailbox(es)` : ""),
     );
   }
 
@@ -172,5 +169,5 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
       `+${totalCreated} -${totalDeleted} messages`,
   );
 
-  return totalCreated;
+  return totalCreated + totalDeleted + removed;
 }

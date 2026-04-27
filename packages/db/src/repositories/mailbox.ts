@@ -1,7 +1,7 @@
 import type { DiscoveredMailbox, FetchedMessage, MailboxRole, SyncCursor } from "@kirimail/shared";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
-import { and, eq, notInArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 
 import type * as schema from "../schema";
 import type { InsertDomainEventInput } from "./domain-event";
@@ -41,9 +41,12 @@ export interface ApplyMailboxSyncResult {
 
 /**
  * Apply mailbox sync results in a single transaction: delete messages the
- * server removed, insert new messages, emit one `message.synced` event per
- * newly-inserted message, and update the mailbox cursor. A repeat sync of
- * already-stored messages emits nothing; deletes emit nothing either.
+ * server removed, insert new messages, and update the mailbox cursor.
+ * A repeat sync of already-stored messages emits nothing.
+ *
+ * Emits one message.synced event per inserted row and one message.deleted event
+ * per deleted row. Event emission is part of the same transaction as above, so
+ * a rollback drops both rows and events together.
  *
  * @param db - Drizzle database instance.
  * @param mailboxId - ID of the mailbox row to sync into.
@@ -69,11 +72,6 @@ export async function applyMailboxSync(
     let messagesCreated = 0;
     let messagesDeleted = 0;
 
-    // NOTE: delete paths below don't emit events. Search/index consumers
-    // will show stale docs until the next reindex reconciles drift. Add
-    // `message.deleted` and emit here if real-time delete consistency
-    // becomes load-bearing.
-
     // 1. UIDVALIDITY change: purge all rows with old uidValidity
     if (oldUidValidity != null && oldUidValidity !== serverCursor.uidValidity) {
       const deleted = await tx
@@ -81,6 +79,13 @@ export async function applyMailboxSync(
         .where(and(eq(messages.mailboxId, mailboxId), eq(messages.uidValidity, oldUidValidity)))
         .returning({ id: messages.id });
       messagesDeleted += deleted.length;
+
+      const events: InsertDomainEventInput[] = deleted.map((row) => ({
+        aggregateType: "message",
+        aggregateId: row.id,
+        eventType: "message.deleted",
+      }));
+      await insertDomainEvents(tx, events);
     }
 
     // 2. Incremental deletion: remove UIDs not in server's current set.
@@ -98,6 +103,13 @@ export async function applyMailboxSync(
         )
         .returning({ id: messages.id });
       messagesDeleted += deleted.length;
+
+      const events: InsertDomainEventInput[] = deleted.map((row) => ({
+        aggregateType: "message",
+        aggregateId: row.id,
+        eventType: "message.deleted",
+      }));
+      await insertDomainEvents(tx, events);
     }
 
     // 3. Insert new messages
@@ -209,21 +221,28 @@ export interface ReconcileMailboxesResult {
   inserted: number;
   updated: number;
   removed: number;
+  /**
+   * Number of messages deleted alongside removed mailboxes. Telemetry only -
+   * the search consumer uses `mailbox.deleted` events, not this count.
+   */
+  messagesDeleted: number;
   mailboxByPath: Map<string, MailboxEntry>;
 }
 
 /**
  * Reconcile DB mailboxes with the server's current state. Fetches existing
  * rows, diffs against the discovered tree, then batch-inserts new rows,
- * updates only changed rows, and deletes stale ones.
+ * updates only changed rows, and deletes stale ones. Messages under any
+ * deleted mailbox are removed in the same transaction, and one `mailbox.deleted`
+ * event is emitted per removed mailbox.
  *
  * Callers must ensure single-writer per account - concurrent calls for the
  * same emailAccountId can hit unique constraint violations. The sync-account
  * pg-boss queue enforces this via stately policy + singletonKey.
  *
- * Identity is keyed on path, so a server-side rename appears as a deletion
- * (CASCADE removes messages) plus a new insert. TODO: Detect renames via
- * UIDVALIDITY matching to preserve messages when the server keeps UIDs.
+ * TODO: Identity is keyed on path, so a server-side rename appears as a deletion
+ * plus a new insert. Detect renames via UIDVALIDITY matching to preserve messages
+ * when the server keeps UIDs.
  *
  * @param db - Drizzle database instance.
  * @param emailAccountId - The email account that owns these mailboxes.
@@ -340,26 +359,47 @@ export async function reconcileMailboxes(
         .where(eq(mailboxes.id, selfEntry.id));
     }
 
-    // 7. Delete stale mailboxes (CASCADE deletes their messages)
+    // 7. Delete stale mailboxes and the messages they own.
     let removed = 0;
-    const hasStale = storedRows.some((r) => !discoveredPathSet.has(r.path));
-    if (hasStale) {
-      const deletedRows = await tx
+    let messagesDeleted = 0;
+    const staleMailboxIds = storedRows
+      .filter((r) => !discoveredPathSet.has(r.path))
+      .map((r) => r.id);
+    if (staleMailboxIds.length > 0) {
+      // NOTE: this DELETE and the ones below share one Postgres transaction.
+      // pg-boss's 600s job expire (see `sync-email-account`) reaps the slot
+      // but can't kill the JS handler, so a sync slow enough to exceed it
+      // could leave this transaction open while a follow-up sync starts.
+      // No evidence it matters at current scales.
+      const deletedMessages = await tx
+        .delete(messages)
+        .where(inArray(messages.mailboxId, staleMailboxIds))
+        .returning({ id: messages.id });
+      messagesDeleted = deletedMessages.length;
+
+      // Safe to delete a stale parent even when its child is still discovered:
+      // discovery re-roots the orphan (see discovery.ts in @kirimail/mail),
+      // step 6 above nulls its `parent_id` in DB, so by this point the FK CASCADE
+      // on `parent_id` has no row to fire on.
+      const deletedMailboxes = await tx
         .delete(mailboxes)
-        .where(
-          and(
-            eq(mailboxes.emailAccountId, emailAccountId),
-            notInArray(mailboxes.path, [...discoveredPathSet]),
-          ),
-        )
+        .where(inArray(mailboxes.id, staleMailboxIds))
         .returning({ id: mailboxes.id });
-      removed = deletedRows.length;
+      removed = deletedMailboxes.length;
+
+      const events: InsertDomainEventInput[] = deletedMailboxes.map((row) => ({
+        aggregateType: "mailbox",
+        aggregateId: row.id,
+        eventType: "mailbox.deleted",
+      }));
+      await insertDomainEvents(tx, events);
     }
 
     return {
       inserted: newMailboxes.length,
       updated: changedRows.length,
       removed,
+      messagesDeleted,
       mailboxByPath,
     };
   });

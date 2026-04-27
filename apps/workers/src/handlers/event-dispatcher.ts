@@ -21,6 +21,8 @@ import {
   MESSAGES_INDEX_UID,
   upsertSyncedMessage,
   searchClient,
+  deleteMessageDoc,
+  deleteMessagesByMailbox,
 } from "@kirimail/search";
 
 type Db = NodePgDatabase<typeof schema>;
@@ -109,10 +111,18 @@ export const MEILISEARCH_CONSUMER_NAME = "meilisearch-indexer";
  * Event types this handler cares about. Two places read this list:
  * the SQL filter (only these types get pulled into the batch) and
  * the switch below (the `never` default forces a `case` for every
- * listed type). Other event types added to DomainEventType but not
- * here are silently filtered out at SQL - each consumer opts in.
+ * listed type). Each consumer of `domain_events` opts in to its own subset.
+ *
+ * NOTE: a new `DomainEventType` literal that doesn't appear here is
+ * silently filtered at SQL - rows pile up in `domain_events`
+ * unconsumed. When adding a new event type, update the producer and
+ * this list in the same commit.
  */
-const HANDLED_EVENT_TYPES = ["message.synced"] as const satisfies readonly DomainEventType[];
+const HANDLED_EVENT_TYPES = [
+  "message.synced",
+  "message.deleted",
+  "mailbox.deleted",
+] as const satisfies readonly DomainEventType[];
 type HandledEventType = (typeof HANDLED_EVENT_TYPES)[number];
 
 /** Runtime dependencies for {@link handleEventDispatcher}. */
@@ -152,12 +162,35 @@ export async function handleEventDispatcher(
   let failed = 0;
   let skipped = 0;
 
+  // NOTE: This loop issues one Meilisearch task per event (updateDocuments
+  // for synced, deleteDocument for deleted) = ~200 HTTP round-trips per
+  // 100-event batch. Negligible on localhost, ~10-20s/tick against remote
+  // Meilisearch (50-100ms ping). Fix: bulk both branches (updateDocuments
+  // and deleteDocuments accept arrays; ~3-5 round-trips per batch). Build
+  // when ticks exceed 10s, or remote deployments become common. Bulking
+  // also requires reworking the per-event poison isolation below to map
+  // per-doc Meilisearch errors back to individual events.
   for (const event of events) {
     try {
       const eventType = event.eventType as HandledEventType;
       switch (eventType) {
         case "message.synced":
           await handleMessageSynced(deps, event.aggregateId);
+          break;
+        case "message.deleted":
+          // By the time this fires, the Postgres row is already gone (`applyMailboxSync`
+          // deletes it in the same tx that emits this event); aggregateId IS the doc id.
+          await deleteMessageDoc(deps.meili, event.aggregateId, deps.indexUid);
+          break;
+        case "mailbox.deleted":
+          // NOTE: a `mailbox.deleted` event that keeps failing eventually gets
+          // skipped in future dispatcher batches. Every doc for that mailbox
+          // then stays in Meilisearch until a manual reindex - tens of thousands
+          // of leaked docs, vs one for a stuck `message.deleted`. In practice
+          // rare (`aggregateId` is always a nanoid, so the filter is well-formed;
+          // infra errors don't count toward the failure limit), but worth
+          // alerting on stuck consumer rows once ops observability lands.
+          await deleteMessagesByMailbox(deps.meili, event.aggregateId, deps.indexUid);
           break;
         default: {
           const _exhaustive: never = eventType;
@@ -241,25 +274,15 @@ export async function handleEventDispatcher(
  * synced message. Row-not-found is an idempotent no-op (message deleted
  * between emission and dispatch).
  */
-// NOTE: One Meilisearch call per event = ~200 HTTP round-trips per 100-event batch.
-// Negligible on localhost, ~10-20s/tick against remote Meilisearch (50-100ms ping).
-// Fix: bulk updateDocuments (~3-5 round-trips). Build when ticks exceed 10s,
-// or remote deployments become common.
 async function handleMessageSynced(deps: EventDispatcherDeps, messageId: string): Promise<void> {
   const { db, meili, indexUid } = deps;
   const row = await getMessageWithOwnership(db, messageId);
   if (!row) {
-    // TODO: this branch hits when an event references a message already deleted from
-    // Postgres. Some delete paths don't emit events today, so search may keep returning
-    // a stale doc for this message until a `message.deleted` producer + consumer is added.
-    // We don't band-aid with a defensive doc-delete here, because the dominant gap is on
-    // the producer side - those deletes never even reach this consumer.
-    //
-    // Important: when added, producer and consumer must ship together. A producer-only
-    // change would emit events that HANDLED_EVENT_TYPES filters out at SQL,
-    // piling up unconsumed in the ledger.
-    //
-    // `warn` level so a real bug (a truly missing row) still surfaces.
+    // Benign race: a sync deleted this row between emit time and now.
+    // The corresponding `message.deleted` (or `mailbox.deleted`) event is queued,
+    // either later in this batch or in a future tick, and will remove any doc
+    // written by an earlier successful synced consume. `warn` so a truly missing
+    // row (real bug, not a race) still surfaces.
     console.warn(
       `[${EVENT_DISPATCHER_QUEUE}] message ${messageId} not found; marking event consumed`,
     );

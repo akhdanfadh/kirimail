@@ -166,7 +166,7 @@ describe("syncEmailAccount", () => {
     expect(remaining.map((m) => m.subject).sort()).toEqual(["Also-Keep", "Keep"]);
   });
 
-  it("reconciles removed mailboxes", async () => {
+  it("reconciles removed mailboxes and emits one mailbox.deleted event", async () => {
     await withImapConnection(creds(), async (client) => {
       await client.mailboxCreate("TestFolder");
     });
@@ -182,7 +182,15 @@ describe("syncEmailAccount", () => {
       .where(eq(schema.mailboxes.emailAccountId, accountId));
     const testFolder = mbxBefore.find((m) => m.path === "TestFolder");
     expect(testFolder).toBeDefined();
-    expect(await messagesFor(testFolder!.id)).toHaveLength(1);
+    const testFolderMessages = await messagesFor(testFolder!.id);
+    expect(testFolderMessages).toHaveLength(1);
+
+    // Capture the existing event ledger so the post-reconcile assertion
+    // can isolate the events that came specifically from the mailbox delete.
+    const eventsBeforeDelete = await db
+      .select({ id: schema.domainEvents.id })
+      .from(schema.domainEvents);
+    const eventIdsBefore = new Set(eventsBeforeDelete.map((e) => e.id));
 
     // Delete TestFolder on the IMAP server
     await withImapConnection(creds(), async (client) => {
@@ -198,11 +206,22 @@ describe("syncEmailAccount", () => {
       .where(eq(schema.mailboxes.emailAccountId, accountId));
     expect(mbxAfter.find((m) => m.path === "TestFolder")).toBeUndefined();
 
-    // Messages cascade-deleted
+    // Message rows removed alongside the mailbox row.
     expect(await messagesFor(testFolder!.id)).toHaveLength(0);
 
     // INBOX still intact
     expect(mbxAfter.find((m) => m.role === "inbox")).toBeDefined();
+
+    // Exactly one mailbox.deleted event keyed at the removed mailbox -
+    // the cascade emits at mailbox granularity, not per-message, so the
+    // search-consumer dispatcher can drop every doc via a single
+    // delete-by-filter regardless of how many messages the mailbox held.
+    const eventsAfter = await db.select().from(schema.domainEvents);
+    const newEvents = eventsAfter.filter((e) => !eventIdsBefore.has(e.id));
+    expect(newEvents).toHaveLength(1);
+    expect(newEvents[0]!.eventType).toBe("mailbox.deleted");
+    expect(newEvents[0]!.aggregateType).toBe("mailbox");
+    expect(newEvents[0]!.aggregateId).toBe(testFolder!.id);
   });
 
   it("purges stale messages when UID validity changes", async () => {

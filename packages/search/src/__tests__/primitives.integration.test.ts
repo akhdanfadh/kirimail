@@ -8,6 +8,7 @@ import { ensureMeilisearchConfig } from "../config";
 import {
   deleteMessageDoc,
   deleteMessagesByEmailAccount,
+  deleteMessagesByMailbox,
   getMessageDoc,
   upsertMessageBody,
   upsertMessageFlags,
@@ -221,5 +222,40 @@ describe("indexing primitives", () => {
     await expect(
       deleteMessagesByEmailAccount(searchClient, 'acct" OR 1=1', TEST_INDEX_UID),
     ).rejects.toThrow(/unsafe emailAccountId/);
+  });
+
+  it("deleteMessagesByMailbox removes only the targeted mailbox and returns the count", async () => {
+    await upsertSyncedMessage(
+      searchClient,
+      makeSyncedMessageDoc({ id: "m1", mailboxId: "mbox_X" }),
+      TEST_INDEX_UID,
+    );
+    await upsertSyncedMessage(
+      searchClient,
+      makeSyncedMessageDoc({ id: "m2", mailboxId: "mbox_X" }),
+      TEST_INDEX_UID,
+    );
+    await upsertSyncedMessage(
+      searchClient,
+      makeSyncedMessageDoc({ id: "m3", mailboxId: "mbox_Y" }),
+      TEST_INDEX_UID,
+    );
+
+    const removed = await deleteMessagesByMailbox(searchClient, "mbox_X", TEST_INDEX_UID);
+    expect(removed).toBe(2);
+
+    expect(await getMessageDoc(searchClient, "m1", TEST_INDEX_UID)).toBeNull();
+    expect(await getMessageDoc(searchClient, "m2", TEST_INDEX_UID)).toBeNull();
+    expect(await getMessageDoc(searchClient, "m3", TEST_INDEX_UID)).not.toBeNull();
+
+    // No-match run resolves with 0, still idempotent (re-dispatch safe).
+    const zero = await deleteMessagesByMailbox(searchClient, "mbox_X", TEST_INDEX_UID);
+    expect(zero).toBe(0);
+  });
+
+  it("rejects a mailboxId that would break the filter expression", async () => {
+    await expect(
+      deleteMessagesByMailbox(searchClient, 'mbox" OR 1=1', TEST_INDEX_UID),
+    ).rejects.toThrow(/unsafe mailboxId/);
   });
 });

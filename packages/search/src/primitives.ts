@@ -145,3 +145,27 @@ export async function deleteMessagesByEmailAccount(
   );
   return task.details?.deletedDocuments ?? 0;
 }
+
+/**
+ * Delete every document for a given mailbox in one Meilisearch task,
+ * regardless of how many messages the mailbox held.
+ * Returns the number of documents actually removed (0 when nothing matched).
+ */
+export async function deleteMessagesByMailbox(
+  client: Meilisearch,
+  mailboxId: string,
+  indexUid: string = MESSAGES_INDEX_UID,
+): Promise<number> {
+  if (!/^[A-Za-z0-9_-]+$/.test(mailboxId)) {
+    throw new Error(`unsafe mailboxId for filter expression: ${mailboxId}`);
+  }
+  const task = await awaitTaskOrThrow(
+    "deleteMessagesByMailbox",
+    client
+      .index<MessageDoc>(indexUid)
+      // `mailboxId` values are nanoid-shaped, so the regex above is enough
+      // to keep direct embedding in the filter expression safe.
+      .deleteDocuments({ filter: `mailboxId = "${mailboxId}"` }),
+  );
+  return task.details?.deletedDocuments ?? 0;
+}

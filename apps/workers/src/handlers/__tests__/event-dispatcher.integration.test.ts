@@ -15,12 +15,13 @@ import {
 } from "#test/helpers";
 import { insertDomainEvent, markDomainEventConsumed, MAX_CONSECUTIVE_FAILURES } from "@kirimail/db";
 import * as schema from "@kirimail/db/schema";
-import { testCredentials, seedMessage } from "@kirimail/mail/testing";
+import { seedMessage, testCredentials, withImapConnection } from "@kirimail/mail/testing";
 import {
   getMessageDoc,
   MeilisearchApiError,
   MeilisearchError,
   MeilisearchRequestError,
+  upsertSyncedMessage,
 } from "@kirimail/search";
 import { and, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
@@ -127,6 +128,24 @@ async function seedSyncedEvent(messageId: string): Promise<string> {
     aggregateType: "message",
     aggregateId: messageId,
     eventType: "message.synced",
+  });
+  return row!.id;
+}
+
+async function seedDeletedEvent(messageId: string): Promise<string> {
+  const row = await insertDomainEvent(db, {
+    aggregateType: "message",
+    aggregateId: messageId,
+    eventType: "message.deleted",
+  });
+  return row!.id;
+}
+
+async function seedMailboxDeletedEvent(mailboxId: string): Promise<string> {
+  const row = await insertDomainEvent(db, {
+    aggregateType: "mailbox",
+    aggregateId: mailboxId,
+    eventType: "mailbox.deleted",
   });
   return row!.id;
 }
@@ -579,6 +598,211 @@ describe("handleEventDispatcher (direct invocation)", () => {
     expect(consumer?.lastError).toBeNull();
     expect(consumer?.attempts).toBe(1);
   });
+
+  it("removes the Meilisearch doc on a message.deleted event", async () => {
+    // Pins the closing half of the delete-consistency story: with the
+    // producer emitting message.deleted in the same tx as the row delete,
+    // the dispatcher must translate that event into a Meilisearch
+    // delete-by-id so search reflects the removal within one tick.
+    const { messageId, mailboxId, emailAccountId, userId } = await seedMessageRow({
+      subject: "To be deleted",
+    });
+    await upsertSyncedMessage(
+      meili,
+      {
+        id: messageId,
+        userId,
+        emailAccountId,
+        mailboxId,
+        subject: "To be deleted",
+        from: ["Alice <alice@example.com>"],
+        to: ["Bob <bob@example.com>"],
+        cc: [],
+        bcc: [],
+        receivedDate: Math.floor(new Date("2026-01-01T00:00:00Z").getTime() / 1000),
+        sizeBytes: 1234,
+        flags: ["\\Seen"],
+        encrypted: false,
+        attachments: [],
+      },
+      TEST_INDEX_UID,
+    );
+    expect(await getMessageDoc(meili, messageId, TEST_INDEX_UID)).not.toBeNull();
+
+    const eventId = await seedDeletedEvent(messageId);
+
+    const result = await handleEventDispatcher({
+      db,
+      meili,
+      indexUid: TEST_INDEX_UID,
+      batchSize: TEST_BATCH_SIZE,
+    });
+    expect(result).toEqual({ consumed: 1, failed: 0, skipped: 0 });
+
+    expect(await getMessageDoc(meili, messageId, TEST_INDEX_UID)).toBeNull();
+
+    const consumer = await consumerRow(eventId);
+    expect(consumer?.lastConsumedAt).toBeInstanceOf(Date);
+    expect(consumer?.lastError).toBeNull();
+    expect(consumer?.attempts).toBe(1);
+  });
+
+  it("treats message.deleted as idempotent when the doc is already absent", async () => {
+    // Re-dispatch safety: the producer emits before the row delete commits,
+    // and the dispatcher may pick up an event whose corresponding doc was
+    // never created (e.g. deletion before any Meilisearch write landed) or
+    // was already removed by an earlier tick. Both cases must consume
+    // cleanly with no error.
+    const neverIndexed = `msg_${randomUUID()}`;
+    const eventId = await seedDeletedEvent(neverIndexed);
+
+    const result = await handleEventDispatcher({
+      db,
+      meili,
+      indexUid: TEST_INDEX_UID,
+      batchSize: TEST_BATCH_SIZE,
+    });
+    expect(result).toEqual({ consumed: 1, failed: 0, skipped: 0 });
+
+    const consumer = await consumerRow(eventId);
+    expect(consumer?.lastConsumedAt).toBeInstanceOf(Date);
+    expect(consumer?.lastError).toBeNull();
+
+    // Second event for the same already-absent id - still a no-op consume.
+    const secondEventId = await seedDeletedEvent(neverIndexed);
+    const second = await handleEventDispatcher({
+      db,
+      meili,
+      indexUid: TEST_INDEX_UID,
+      batchSize: TEST_BATCH_SIZE,
+    });
+    expect(second).toEqual({ consumed: 1, failed: 0, skipped: 0 });
+    const secondConsumer = await consumerRow(secondEventId);
+    expect(secondConsumer?.lastConsumedAt).toBeInstanceOf(Date);
+    expect(secondConsumer?.lastError).toBeNull();
+  });
+
+  it("removes every Meilisearch doc for a mailbox on a mailbox.deleted event", async () => {
+    // Fan-out semantics: one mailbox.deleted event must drop every doc
+    // owned by that mailbox via a single Meilisearch delete-by-filter.
+    // A regression that wired the consumer to deleteMessageDoc(mailboxId)
+    // would instead try (and fail) to remove a doc whose id matched the
+    // mailbox id, leaving every owned doc behind.
+    const owner = await seedMessageRow({ subject: "Owner A" });
+    const sharedMailboxId = owner.mailboxId;
+    // Insert a sibling message under the same mailbox directly so we can
+    // pick a non-colliding providerUid (seedMessageRow hard-codes 1).
+    const siblingMessageId = randomUUID();
+    await db.insert(schema.messages).values({
+      id: siblingMessageId,
+      mailboxId: sharedMailboxId,
+      providerUid: 2,
+      uidValidity: 1,
+      subject: "Owner B",
+      fromAddress: [{ name: "Alice", address: "alice@example.com" }],
+      toAddress: [{ name: "Bob", address: "bob@example.com" }],
+      ccAddress: [],
+      bccAddress: [],
+      flags: ["\\Seen"],
+      attachments: [],
+      internalDate: new Date("2026-01-01T00:00:00Z"),
+      sizeOctets: 1234,
+    });
+    // Independent message under a different mailbox - must survive.
+    const survivor = await seedMessageRow({ subject: "Survivor" });
+
+    const docBase = {
+      from: ["Alice <alice@example.com>"],
+      to: ["Bob <bob@example.com>"],
+      cc: [],
+      bcc: [],
+      receivedDate: Math.floor(new Date("2026-01-01T00:00:00Z").getTime() / 1000),
+      sizeBytes: 1234,
+      flags: ["\\Seen"],
+      encrypted: false,
+      attachments: [],
+    };
+    await upsertSyncedMessage(
+      meili,
+      {
+        ...docBase,
+        id: owner.messageId,
+        userId: owner.userId,
+        emailAccountId: owner.emailAccountId,
+        mailboxId: sharedMailboxId,
+        subject: "Owner A",
+      },
+      TEST_INDEX_UID,
+    );
+    await upsertSyncedMessage(
+      meili,
+      {
+        ...docBase,
+        id: siblingMessageId,
+        userId: owner.userId,
+        emailAccountId: owner.emailAccountId,
+        mailboxId: sharedMailboxId,
+        subject: "Owner B",
+      },
+      TEST_INDEX_UID,
+    );
+    await upsertSyncedMessage(
+      meili,
+      {
+        ...docBase,
+        id: survivor.messageId,
+        userId: survivor.userId,
+        emailAccountId: survivor.emailAccountId,
+        mailboxId: survivor.mailboxId,
+        subject: "Survivor",
+      },
+      TEST_INDEX_UID,
+    );
+    expect(await getMessageDoc(meili, owner.messageId, TEST_INDEX_UID)).not.toBeNull();
+    expect(await getMessageDoc(meili, siblingMessageId, TEST_INDEX_UID)).not.toBeNull();
+    expect(await getMessageDoc(meili, survivor.messageId, TEST_INDEX_UID)).not.toBeNull();
+
+    const eventId = await seedMailboxDeletedEvent(sharedMailboxId);
+
+    const result = await handleEventDispatcher({
+      db,
+      meili,
+      indexUid: TEST_INDEX_UID,
+      batchSize: TEST_BATCH_SIZE,
+    });
+    expect(result).toEqual({ consumed: 1, failed: 0, skipped: 0 });
+
+    // Both shared-mailbox docs gone via the filter; survivor's doc untouched.
+    expect(await getMessageDoc(meili, owner.messageId, TEST_INDEX_UID)).toBeNull();
+    expect(await getMessageDoc(meili, siblingMessageId, TEST_INDEX_UID)).toBeNull();
+    expect(await getMessageDoc(meili, survivor.messageId, TEST_INDEX_UID)).not.toBeNull();
+
+    const consumer = await consumerRow(eventId);
+    expect(consumer?.lastConsumedAt).toBeInstanceOf(Date);
+    expect(consumer?.lastError).toBeNull();
+    expect(consumer?.attempts).toBe(1);
+  });
+
+  it("treats mailbox.deleted as idempotent when no docs match the filter", async () => {
+    // Re-dispatch and never-indexed cases collapse to the same shape:
+    // deleteDocuments({filter}) returns 0 deletedDocuments for an empty
+    // match set. The event must still consume cleanly so a re-dispatch
+    // (or a mailbox that never had any synced docs) doesn't get stuck.
+    const neverIndexed = `mbx_${randomUUID()}`;
+    const eventId = await seedMailboxDeletedEvent(neverIndexed);
+
+    const result = await handleEventDispatcher({
+      db,
+      meili,
+      indexUid: TEST_INDEX_UID,
+      batchSize: TEST_BATCH_SIZE,
+    });
+    expect(result).toEqual({ consumed: 1, failed: 0, skipped: 0 });
+
+    const consumer = await consumerRow(eventId);
+    expect(consumer?.lastConsumedAt).toBeInstanceOf(Date);
+    expect(consumer?.lastError).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -657,6 +881,229 @@ describe("event-dispatcher via pg-boss (post-sync trigger)", () => {
         const c = await consumerRow(event.id);
         expect(c?.lastConsumedAt).toBeInstanceOf(Date);
       }
+    } finally {
+      await boss.stop({ graceful: true, timeout: 5_000 });
+    }
+  });
+
+  it("removes search docs for messages deleted server-side, within one re-sync", async () => {
+    // End-to-end pin for the full delete-consistency story:
+    // sync (header indexed) -> server-side EXPUNGE -> re-sync emits
+    // message.deleted -> dispatcher tick removes the doc. Without per-branch
+    // emission in applyMailboxSync OR a message.deleted consumer branch,
+    // this would hang on the doc-absence assertion.
+    const userId = await createTestUser(db);
+    const accountId = await createEncryptedEmailAccount(db, userId, {
+      emailUser: "dispatchuser",
+    });
+
+    await seedMessage(dispatchCreds(), { headers: { subject: "Stay" } });
+    await seedMessage(dispatchCreds(), { headers: { subject: "Delete-Me" } });
+
+    const boss = createTestBoss();
+    await boss.start();
+    try {
+      await registerEventDispatcher(boss, { indexUid: TEST_INDEX_UID, batchSize: TEST_BATCH_SIZE });
+      await registerSyncEmailAccount(boss);
+
+      const syncSpy = boss.getSpy("sync-email-account");
+      const dispatchSpy = boss.getSpy(EVENT_DISPATCHER_QUEUE);
+
+      // First sync: both messages indexed.
+      await boss.send(
+        "sync-email-account",
+        { emailAccountId: accountId },
+        { singletonKey: accountId },
+      );
+      await syncSpy.waitForJob(() => true, "completed");
+      await dispatchSpy.waitForJob(() => true, "completed");
+
+      const initialMsgs = await db.select().from(schema.messages);
+      expect(initialMsgs).toHaveLength(2);
+      const deleteTarget = initialMsgs.find((m) => m.subject === "Delete-Me")!;
+      const survivor = initialMsgs.find((m) => m.subject === "Stay")!;
+      expect(await getMessageDoc(meili, deleteTarget.id, TEST_INDEX_UID)).not.toBeNull();
+      expect(await getMessageDoc(meili, survivor.id, TEST_INDEX_UID)).not.toBeNull();
+
+      // Server-side delete via IMAP, mirroring user action in another client.
+      await withImapConnection(dispatchCreds(), async (client) => {
+        const lock = await client.getMailboxLock("INBOX");
+        try {
+          await client.messageDelete({ subject: "Delete-Me" });
+        } finally {
+          lock.release();
+        }
+      });
+
+      // Second sync. Spy waitForJob caches by job id+state, so a second
+      // "completed" against the same singletonKey would replay the first
+      // result instead of advancing - poll DB+Meilisearch for end-state
+      // convergence (mirrors the backlog-drain test below).
+      await boss.send(
+        "sync-email-account",
+        { emailAccountId: accountId },
+        { singletonKey: accountId },
+      );
+
+      // Poll until the row is gone, the doc is gone, AND the dispatcher has
+      // marked the corresponding event consumed. The dispatcher's
+      // markDomainEventConsumed runs after deleteMessageDoc returns, so a
+      // poll exit on doc-absence alone races with that final UPDATE.
+      // TODO: extract `waitForConverge({deadlineMs, predicate})` when a third call site lands.
+      const deadline = Date.now() + 15_000;
+      let done = false;
+      while (Date.now() < deadline) {
+        const remaining = await db.select().from(schema.messages);
+        const targetDoc = await getMessageDoc(meili, deleteTarget.id, TEST_INDEX_UID);
+        const deletedEvent = (await db.select().from(schema.domainEvents)).find(
+          (e) => e.eventType === "message.deleted" && e.aggregateId === deleteTarget.id,
+        );
+        const consumer = deletedEvent ? await consumerRow(deletedEvent.id) : undefined;
+        if (
+          remaining.length === 1 &&
+          targetDoc === null &&
+          consumer?.lastConsumedAt instanceof Date
+        ) {
+          done = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(done).toBe(true);
+
+      // Survivor is unchanged in both Postgres and Meilisearch.
+      const remaining = await db.select().from(schema.messages);
+      expect(remaining.map((m) => m.id)).toEqual([survivor.id]);
+      expect(await getMessageDoc(meili, survivor.id, TEST_INDEX_UID)).not.toBeNull();
+
+      // The message.deleted event landed cleanly (no error stamped on retry).
+      const events = await db.select().from(schema.domainEvents);
+      const deletedEvent = events.find(
+        (e) => e.eventType === "message.deleted" && e.aggregateId === deleteTarget.id,
+      );
+      expect(deletedEvent).toBeDefined();
+      const consumer = await consumerRow(deletedEvent!.id);
+      expect(consumer?.lastError).toBeNull();
+    } finally {
+      await boss.stop({ graceful: true, timeout: 5_000 });
+    }
+  });
+
+  it("wakes the dispatcher on a cascade-only sync (mailbox deleted server-side)", async () => {
+    // Pins the wakeup-gate path AND the per-mailbox event granularity for
+    // the reconcileMailboxes cascade. A sync whose only change is a
+    // server-side mailbox removal emits ONE `mailbox.deleted` event that
+    // resolves to a single Meilisearch delete-by-filter. Without the gate
+    // counting `removed`, no boss.send would fire and Meilisearch would
+    // keep phantom docs until the 5-min cron tick; with the wrong event
+    // shape, the dispatcher would issue per-message deletes and the doc
+    // count would diverge.
+    const userId = await createTestUser(db);
+    const accountId = await createEncryptedEmailAccount(db, userId, {
+      emailUser: "dispatchuser",
+    });
+
+    await withImapConnection(dispatchCreds(), async (client) => {
+      await client.mailboxCreate("Doomed");
+    });
+    await seedMessage(dispatchCreds(), {
+      headers: { subject: "Cascade A" },
+      mailbox: "Doomed",
+    });
+    await seedMessage(dispatchCreds(), {
+      headers: { subject: "Cascade B" },
+      mailbox: "Doomed",
+    });
+
+    const boss = createTestBoss();
+    await boss.start();
+    try {
+      await registerEventDispatcher(boss, { indexUid: TEST_INDEX_UID, batchSize: TEST_BATCH_SIZE });
+      await registerSyncEmailAccount(boss);
+
+      const syncSpy = boss.getSpy("sync-email-account");
+      const dispatchSpy = boss.getSpy(EVENT_DISPATCHER_QUEUE);
+
+      // First sync: both Doomed messages indexed.
+      await boss.send(
+        "sync-email-account",
+        { emailAccountId: accountId },
+        { singletonKey: accountId },
+      );
+      await syncSpy.waitForJob(() => true, "completed");
+      await dispatchSpy.waitForJob(() => true, "completed");
+
+      const initialMsgs = await db.select().from(schema.messages);
+      expect(initialMsgs).toHaveLength(2);
+      const cascadedMessageIds = initialMsgs.map((m) => m.id);
+      const doomedMailboxRow = (
+        await db
+          .select()
+          .from(schema.mailboxes)
+          .where(eq(schema.mailboxes.emailAccountId, accountId))
+      ).find((m) => m.path === "Doomed");
+      expect(doomedMailboxRow).toBeDefined();
+      const doomedMailboxId = doomedMailboxRow!.id;
+      for (const id of cascadedMessageIds) {
+        expect(await getMessageDoc(meili, id, TEST_INDEX_UID)).not.toBeNull();
+      }
+
+      // Server-side mailbox delete - the only change this re-sync will see.
+      await withImapConnection(dispatchCreds(), async (client) => {
+        await client.mailboxDelete("Doomed");
+      });
+
+      // Second sync. reconcileMailboxes will emit ONE mailbox.deleted
+      // event keyed at the Doomed mailbox id - applyMailboxSync emits
+      // nothing because the mailbox is gone before its cursor branch
+      // runs. Without the wakeup gate counting `removed`, no boss.send
+      // would fire and the test would time out below.
+      await boss.send(
+        "sync-email-account",
+        { emailAccountId: accountId },
+        { singletonKey: accountId },
+      );
+
+      // Poll until message rows are gone, docs are gone, AND the single
+      // mailbox.deleted event is marked consumed. markDomainEventConsumed
+      // runs after deleteMessagesByMailbox returns, so a poll exit on
+      // doc-absence alone races with that final UPDATE.
+      const deadline = Date.now() + 15_000;
+      let done = false;
+      while (Date.now() < deadline) {
+        const remaining = await db.select().from(schema.messages);
+        const docsAbsent = (
+          await Promise.all(
+            cascadedMessageIds.map((id) => getMessageDoc(meili, id, TEST_INDEX_UID)),
+          )
+        ).every((d) => d === null);
+        const cascadeEvent = (await db.select().from(schema.domainEvents)).find(
+          (e) => e.eventType === "mailbox.deleted" && e.aggregateId === doomedMailboxId,
+        );
+        const consumer = cascadeEvent ? await consumerRow(cascadeEvent.id) : undefined;
+        if (remaining.length === 0 && docsAbsent && consumer?.lastConsumedAt instanceof Date) {
+          done = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(done).toBe(true);
+
+      // Verify the event shape post-poll: exactly one mailbox.deleted for
+      // the doomed mailbox, no straggler per-message events from the
+      // cascade path. A regression that re-introduced per-message
+      // emission would surface here as additional message.deleted rows.
+      const events = await db.select().from(schema.domainEvents);
+      const cascadeEvents = events.filter((e) => e.eventType === "mailbox.deleted");
+      expect(cascadeEvents).toHaveLength(1);
+      expect(cascadeEvents[0]!.aggregateId).toBe(doomedMailboxId);
+      expect(cascadeEvents[0]!.aggregateType).toBe("mailbox");
+      const strayPerMessage = events.filter(
+        (e) => e.eventType === "message.deleted" && cascadedMessageIds.includes(e.aggregateId),
+      );
+      expect(strayPerMessage).toHaveLength(0);
+      const consumer = await consumerRow(cascadeEvents[0]!.id);
+      expect(consumer?.lastError).toBeNull();
     } finally {
       await boss.stop({ graceful: true, timeout: 5_000 });
     }

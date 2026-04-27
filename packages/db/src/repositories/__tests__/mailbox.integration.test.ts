@@ -8,7 +8,7 @@ import {
   createTestMailbox,
   createTestUser,
 } from "#test/helpers";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import type * as schema from "../../schema";
@@ -643,40 +643,207 @@ describe("applyMailboxSync domain event emission", () => {
     expect(events).toHaveLength(3); // 2 from initial + 1 from mixed
   });
 
-  it("emits no events for UIDVALIDITY-purge or incremental-delete paths", async () => {
-    // Pins the producer's stated intent that deletions don't emit. A
-    // future contributor wiring message.deleted emission could accidentally
-    // attach it to the UIDVALIDITY-purge path (which represents server-side
-    // reset, not user-visible deletion) - this test catches that.
+  it("emits one message.deleted event per row removed by incremental delete", async () => {
+    // Per-branch pin for the incremental-delete path. A regression that
+    // skipped emission here would let Meilisearch keep phantom docs for
+    // user-deleted (or expunged) messages until a manual reindex.
+    const seeded = [
+      buildFetchedMessage({ uid: 1, subject: "Stay" }),
+      buildFetchedMessage({ uid: 2, subject: "Drop A" }),
+      buildFetchedMessage({ uid: 3, subject: "Drop B" }),
+    ];
     await applyMailboxSync(
       db,
       mailboxId,
-      [buildFetchedMessage({ uid: 1 })],
+      seeded,
+      { ...baseCursor, uidNext: 4, messageCount: 3 },
+      null,
+      null,
+    );
+    const seededRows = await db
+      .select({ id: messages.id, providerUid: messages.providerUid })
+      .from(messages)
+      .where(eq(messages.mailboxId, mailboxId));
+    const droppedIds = new Set(seededRows.filter((r) => r.providerUid !== 1).map((r) => r.id));
+    await db.delete(domainEvents); // reset the emit-on-insert noise from seeding
+
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      [],
+      { ...baseCursor, uidNext: 4, messageCount: 1 },
+      [1],
+      null,
+    );
+
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((e) => e.aggregateId))).toEqual(droppedIds);
+    for (const event of events) {
+      expect(event.aggregateType).toBe("message");
+      expect(event.eventType).toBe("message.deleted");
+      expect(event.payload).toEqual({});
+    }
+  });
+
+  it("emits one message.deleted event per row removed by UIDVALIDITY purge", async () => {
+    // Per-branch pin for the UIDVALIDITY-purge path. The purge represents
+    // a server-side rebuild rather than user-visible deletion, but the
+    // search-consistency story is the same: every row that disappears
+    // from Postgres needs a corresponding event so the doc can be
+    // removed from Meilisearch.
+    const seeded = [
+      buildFetchedMessage({ uid: 1, subject: "Old 1" }),
+      buildFetchedMessage({ uid: 2, subject: "Old 2" }),
+    ];
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      seeded,
+      { ...baseCursor, uidValidity: 100, uidNext: 3, messageCount: 2 },
+      null,
+      null,
+    );
+    const purgedIds = new Set(
+      (
+        await db.select({ id: messages.id }).from(messages).where(eq(messages.mailboxId, mailboxId))
+      ).map((r) => r.id),
+    );
+    await db.delete(domainEvents); // reset the emit-on-insert noise from seeding
+
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      [],
+      { ...baseCursor, uidValidity: 200, uidNext: 1, messageCount: 0 },
+      null,
+      100,
+    );
+
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((e) => e.aggregateId))).toEqual(purgedIds);
+    for (const event of events) {
+      expect(event.aggregateType).toBe("message");
+      expect(event.eventType).toBe("message.deleted");
+      expect(event.payload).toEqual({});
+    }
+  });
+
+  it("emits synced events only for inserts and deleted events only for removals in a mixed sync", async () => {
+    // Per-branch alignment proof. The insert and delete branches each
+    // have their own .returning() set, and a regression that wired the
+    // wrong returning set to either emission would surface here as a
+    // wrong eventType-to-aggregateId mapping.
+    const initial = [
+      buildFetchedMessage({ uid: 1, subject: "Keep 1" }),
+      buildFetchedMessage({ uid: 2, subject: "Drop" }),
+      buildFetchedMessage({ uid: 3, subject: "Keep 3" }),
+    ];
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      initial,
+      { ...baseCursor, uidNext: 4, messageCount: 3 },
+      null,
+      null,
+    );
+    const seededByUid = new Map(
+      (
+        await db
+          .select({ id: messages.id, providerUid: messages.providerUid })
+          .from(messages)
+          .where(eq(messages.mailboxId, mailboxId))
+      ).map((r) => [r.providerUid, r.id]),
+    );
+    const droppedId = seededByUid.get(2)!;
+    await db.delete(domainEvents); // reset the emit-on-insert noise from seeding
+
+    // UID 2 removed, UID 4 added.
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      [buildFetchedMessage({ uid: 4, subject: "Fresh 4" })],
+      { ...baseCursor, uidNext: 5, messageCount: 3 },
+      [1, 3, 4],
+      null,
+    );
+
+    const insertedId = (
+      await db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(and(eq(messages.mailboxId, mailboxId), eq(messages.providerUid, 4)))
+    )[0]!.id;
+
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(2);
+
+    const synced = events.filter((e) => e.eventType === "message.synced");
+    const deleted = events.filter((e) => e.eventType === "message.deleted");
+    expect(synced).toHaveLength(1);
+    expect(deleted).toHaveLength(1);
+    expect(synced[0]!.aggregateId).toBe(insertedId);
+    expect(deleted[0]!.aggregateId).toBe(droppedId);
+  });
+
+  it("rolls back the message delete when the message.deleted event insert fails mid-transaction", async () => {
+    // Atomic-pair proof for the delete path, mirroring the synced-path
+    // rollback test above. A transient CHECK constraint forces the event
+    // insert to fail after the message DELETE has staged, so the row
+    // must reappear (rollback). A regression that pulled delete-path
+    // emission outside the tx would leave Meilisearch and Postgres
+    // permanently divergent: the row would stay deleted but the event
+    // wouldn't exist to drive the doc removal.
+    await applyMailboxSync(
+      db,
+      mailboxId,
+      [buildFetchedMessage({ uid: 1, subject: "Before delete" })],
       { ...baseCursor, uidNext: 2, messageCount: 1 },
       null,
       null,
     );
-    await db.delete(domainEvents); // reset the emit-on-insert noise from seeding
+    const beforeIds = (
+      await db.select({ id: messages.id }).from(messages).where(eq(messages.mailboxId, mailboxId))
+    ).map((r) => r.id);
+    expect(beforeIds).toHaveLength(1);
 
-    // Incremental delete: server reports empty UID set.
-    await applyMailboxSync(
-      db,
-      mailboxId,
-      [],
-      { ...baseCursor, uidNext: 2, messageCount: 0 },
-      [],
-      null,
+    await db.execute(
+      sql`ALTER TABLE domain_events ADD CONSTRAINT tmp_fail_message_deleted CHECK (event_type <> 'message.deleted')`,
     );
-    expect(await db.select().from(domainEvents)).toHaveLength(0);
+    try {
+      await expect(
+        applyMailboxSync(
+          db,
+          mailboxId,
+          [],
+          { ...baseCursor, uidNext: 2, messageCount: 0 },
+          [],
+          null,
+        ),
+      ).rejects.toThrow(/domain_events/);
 
-    // UIDVALIDITY purge: old rows wiped, no new fetch.
+      const afterIds = (
+        await db.select({ id: messages.id }).from(messages).where(eq(messages.mailboxId, mailboxId))
+      ).map((r) => r.id);
+      expect(afterIds).toEqual(beforeIds); // delete rolled back
+    } finally {
+      await db.execute(sql`ALTER TABLE domain_events DROP CONSTRAINT tmp_fail_message_deleted`);
+    }
+  });
+
+  it("emits zero events on a no-op sync against an already-empty mailbox", async () => {
+    // Empty-deletion case. Exercises insertDomainEvents([])'s short-circuit
+    // on both delete branches at once - if either branch tried to insert
+    // an empty value list, Postgres would reject the SQL and this
+    // would throw.
     await applyMailboxSync(
       db,
       mailboxId,
       [],
-      { ...baseCursor, uidValidity: 999, uidNext: 1, messageCount: 0 },
+      { ...baseCursor, uidNext: 1, messageCount: 0 },
+      [],
       null,
-      baseCursor.uidValidity,
     );
     expect(await db.select().from(domainEvents)).toHaveLength(0);
   });
@@ -1064,7 +1231,7 @@ describe("reconcileMailboxes", () => {
     expect(projects!.parentId).toBe(personalId);
   });
 
-  it("treats server-side rename as delete + insert (messages lost)", async () => {
+  it("treats server-side rename as delete + insert (messages lost) and emits one mailbox.deleted", async () => {
     // Seed INBOX with messages via applyMailboxSync
     await applyMailboxSync(
       db,
@@ -1074,6 +1241,7 @@ describe("reconcileMailboxes", () => {
       null,
       null,
     );
+    await db.delete(domainEvents); // reset emit-on-insert noise from seeding
 
     // Server renamed INBOX -> Primary. Old path gone, new path appeared.
     // Known limitation (see TODO in reconcileMailboxes): identity is keyed
@@ -1091,13 +1259,320 @@ describe("reconcileMailboxes", () => {
 
     expect(result.removed).toBe(1);
     expect(result.inserted).toBe(1);
+    expect(result.messagesDeleted).toBe(2);
 
-    // Messages from old INBOX are gone (CASCADE on mailbox deletion)
+    // Messages from old INBOX are gone (deleted explicitly with the mailbox)
     const msgRows = await db.select().from(messages).where(eq(messages.mailboxId, mailboxId));
     expect(msgRows).toHaveLength(0);
+
+    // One mailbox.deleted event keyed at the removed mailbox row, regardless
+    // of how many messages it held. The dispatcher resolves it via a single
+    // Meilisearch delete-by-filter call - O(1) tasks instead of O(messages).
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.aggregateType).toBe("mailbox");
+    expect(events[0]!.aggregateId).toBe(mailboxId);
+    expect(events[0]!.eventType).toBe("mailbox.deleted");
+    expect(events[0]!.payload).toEqual({});
 
     // New mailbox starts with null cursor -> full initial resync
     const primary = result.mailboxByPath.get("Primary")!;
     expect(primary.storedCursor).toBeNull();
+  });
+
+  it("emits one mailbox.deleted even when the stale mailbox had no messages", async () => {
+    // The mailbox.deleted event is keyed off the mailbox row, not the
+    // descendant message count. A regression that gated emission on
+    // messagesDeleted > 0 would skip empty-mailbox removals and leave
+    // Meilisearch consumers without any signal for them.
+    await reconcileMailboxes(db, accountId, [
+      {
+        path: "INBOX",
+        delimiter: "/",
+        specialUse: "\\Inbox",
+        role: "inbox",
+        syncCursor: null,
+        children: [],
+      },
+      {
+        path: "ToBeRemoved",
+        delimiter: "/",
+        specialUse: null,
+        role: "custom",
+        syncCursor: null,
+        children: [],
+      },
+    ]);
+    const toBeRemovedRow = (
+      await db
+        .select({ id: mailboxes.id })
+        .from(mailboxes)
+        .where(eq(mailboxes.emailAccountId, accountId))
+    ).find((m) => m.id !== mailboxId)!;
+    await db.delete(domainEvents); // reset any seeding noise
+
+    const result = await reconcileMailboxes(db, accountId, [
+      {
+        path: "INBOX",
+        delimiter: "/",
+        specialUse: "\\Inbox",
+        role: "inbox",
+        syncCursor: null,
+        children: [],
+      },
+    ]);
+    expect(result.removed).toBe(1);
+    expect(result.messagesDeleted).toBe(0);
+
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.eventType).toBe("mailbox.deleted");
+    expect(events[0]!.aggregateId).toBe(toBeRemovedRow.id);
+  });
+
+  it("rolls back the mailbox delete when the mailbox.deleted event insert fails mid-transaction", async () => {
+    // Atomic-pair proof for the cascade-emission path, mirroring
+    // applyMailboxSync's rollback test. A transient CHECK constraint forces
+    // the event insert to fail after the mailbox DELETE has staged, so the
+    // mailbox row, its message rows, and any partial event inserts must all
+    // unwind. A regression that pulled the explicit DELETE or the emission
+    // outside the tx would leave Postgres permanently divergent from the
+    // search index.
+    const otherMailboxId = await createTestMailbox(db, accountId, { path: "Doomed" });
+    await applyMailboxSync(
+      db,
+      otherMailboxId,
+      [buildFetchedMessage({ uid: 1, subject: "Doomed message" })],
+      { uidValidity: 1, uidNext: 2, messageCount: 1, highestModseq: null },
+      null,
+      null,
+    );
+    const beforeMailboxes = await db
+      .select({ id: mailboxes.id })
+      .from(mailboxes)
+      .where(eq(mailboxes.emailAccountId, accountId));
+    const beforeMessages = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.mailboxId, otherMailboxId));
+    expect(beforeMailboxes.map((m) => m.id)).toContain(otherMailboxId);
+    expect(beforeMessages).toHaveLength(1);
+
+    await db.execute(
+      sql`ALTER TABLE domain_events ADD CONSTRAINT tmp_fail_reconcile_deleted CHECK (event_type <> 'mailbox.deleted')`,
+    );
+    try {
+      await expect(
+        reconcileMailboxes(db, accountId, [
+          {
+            path: "INBOX",
+            delimiter: "/",
+            specialUse: "\\Inbox",
+            role: "inbox",
+            syncCursor: null,
+            children: [],
+          },
+        ]),
+      ).rejects.toThrow(/domain_events/);
+
+      const afterMailboxes = await db
+        .select({ id: mailboxes.id })
+        .from(mailboxes)
+        .where(eq(mailboxes.emailAccountId, accountId));
+      const afterMessages = await db
+        .select({ id: messages.id })
+        .from(messages)
+        .where(eq(messages.mailboxId, otherMailboxId));
+      expect(afterMailboxes.map((m) => m.id)).toContain(otherMailboxId); // mailbox still here
+      expect(afterMessages).toEqual(beforeMessages); // messages still here
+    } finally {
+      await db.execute(sql`ALTER TABLE domain_events DROP CONSTRAINT tmp_fail_reconcile_deleted`);
+    }
+  });
+
+  it("emits one mailbox.deleted event per removed mailbox in a parent + child subtree", async () => {
+    // Pins per-mailbox emission granularity across a hierarchical removal:
+    // even when the cascade drops messages from multiple subtree mailboxes,
+    // the event count tracks the mailbox count, not the message count. The
+    // dispatcher resolves each mailbox.deleted via a delete-by-filter, so
+    // the consumer side stays O(mailboxes) regardless of subtree size.
+    const parentMailboxId = await createTestMailbox(db, accountId, { path: "Work" });
+    const childMailboxId = await createTestMailbox(db, accountId, {
+      path: "Work/Projects",
+      role: "custom",
+    });
+    // Repoint the child at the parent - createTestMailbox doesn't expose parentId.
+    await db
+      .update(mailboxes)
+      .set({ parentId: parentMailboxId })
+      .where(eq(mailboxes.id, childMailboxId));
+
+    await applyMailboxSync(
+      db,
+      parentMailboxId,
+      [buildFetchedMessage({ uid: 1, subject: "Parent message" })],
+      { uidValidity: 1, uidNext: 2, messageCount: 1, highestModseq: null },
+      null,
+      null,
+    );
+    await applyMailboxSync(
+      db,
+      childMailboxId,
+      [buildFetchedMessage({ uid: 1, subject: "Child message" })],
+      { uidValidity: 1, uidNext: 2, messageCount: 1, highestModseq: null },
+      null,
+      null,
+    );
+    await db.delete(domainEvents); // reset emit-on-insert noise from seeding
+
+    // Discovered set is the stock INBOX from beforeEach only - both Work
+    // and Work/Projects go missing from LIST.
+    const result = await reconcileMailboxes(db, accountId, [
+      {
+        path: "INBOX",
+        delimiter: "/",
+        specialUse: "\\Inbox",
+        role: "inbox",
+        syncCursor: null,
+        children: [],
+      },
+    ]);
+
+    expect(result.removed).toBe(2); // both parent and child mailboxes
+    expect(result.messagesDeleted).toBe(2); // accurate operational count, not 1:1 with events
+
+    // Both subtree mailboxes are gone.
+    const remainingMailboxes = await db
+      .select({ id: mailboxes.id })
+      .from(mailboxes)
+      .where(eq(mailboxes.emailAccountId, accountId));
+    expect(remainingMailboxes.map((m) => m.id)).not.toContain(parentMailboxId);
+    expect(remainingMailboxes.map((m) => m.id)).not.toContain(childMailboxId);
+
+    // Exactly one mailbox.deleted event per removed mailbox - if a regression
+    // re-introduced per-message emission for the cascade path, we'd see two
+    // message.deleted events here on top of (or instead of) the mailbox events.
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(2);
+    expect(events.every((e) => e.eventType === "mailbox.deleted")).toBe(true);
+    expect(new Set(events.map((e) => e.aggregateId))).toEqual(
+      new Set([parentMailboxId, childMailboxId]),
+    );
+  });
+
+  it("preserves a surviving child whose parent was removed server-side", async () => {
+    // Pins the cascade-safety argument in step 7: when only the parent
+    // goes stale and the child stays in the LIST response, the discovery
+    // tree promotes the child to a root (parentPath = null), step 6 nulls
+    // the child's `parent_id`, and the FK ON DELETE CASCADE on
+    // `mailboxes.parent_id` therefore can't fire on the survivor when
+    // step 7 deletes the parent. A regression that broke any link in
+    // that chain (discovery skipping the orphan-promotion branch, step 6
+    // leaving parent_id stale, or step 7 expanding the IN list to include
+    // the survivor) would silently cascade-delete the child's row and
+    // leak its messages and search docs.
+    await reconcileMailboxes(db, accountId, [
+      {
+        path: "INBOX",
+        delimiter: "/",
+        specialUse: "\\Inbox",
+        role: "inbox",
+        syncCursor: null,
+        children: [],
+      },
+      {
+        path: "Work",
+        delimiter: "/",
+        specialUse: null,
+        role: "custom",
+        syncCursor: null,
+        children: [
+          {
+            path: "Work/Projects",
+            delimiter: "/",
+            specialUse: null,
+            role: "custom",
+            syncCursor: null,
+            children: [],
+          },
+        ],
+      },
+    ]);
+    const initialMailboxes = await db
+      .select()
+      .from(mailboxes)
+      .where(eq(mailboxes.emailAccountId, accountId));
+    const parentRow = initialMailboxes.find((m) => m.path === "Work")!;
+    const childRow = initialMailboxes.find((m) => m.path === "Work/Projects")!;
+    // Confirm the discovered tree linked the child under the parent.
+    expect(childRow.parentId).toBe(parentRow.id);
+
+    // Seed a message in the child mailbox so we can verify the survivor's
+    // data isn't silently swept by an FK cascade.
+    await applyMailboxSync(
+      db,
+      childRow.id,
+      [buildFetchedMessage({ uid: 1, subject: "Survivor message" })],
+      { uidValidity: 1, uidNext: 2, messageCount: 1, highestModseq: null },
+      null,
+      null,
+    );
+    const survivorMessageRows = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.mailboxId, childRow.id));
+    expect(survivorMessageRows).toHaveLength(1);
+    const survivorMessageId = survivorMessageRows[0]!.id;
+    await db.delete(domainEvents); // reset emit-on-insert noise from seeding
+
+    // Server-side: only `Work` disappears from the LIST response;
+    // `Work/Projects` is still listed. The discovery tree treats it as
+    // a top-level entry because its parent is missing.
+    const result = await reconcileMailboxes(db, accountId, [
+      {
+        path: "INBOX",
+        delimiter: "/",
+        specialUse: "\\Inbox",
+        role: "inbox",
+        syncCursor: null,
+        children: [],
+      },
+      {
+        path: "Work/Projects",
+        delimiter: "/",
+        specialUse: null,
+        role: "custom",
+        syncCursor: null,
+        children: [],
+      },
+    ]);
+
+    expect(result.removed).toBe(1);
+    expect(result.messagesDeleted).toBe(0); // survivor's messages weren't dropped
+
+    // Parent is gone, child survives with its parent_id nulled (step 6's
+    // promote-to-root path).
+    const remaining = await db
+      .select()
+      .from(mailboxes)
+      .where(eq(mailboxes.emailAccountId, accountId));
+    expect(remaining.map((m) => m.id)).not.toContain(parentRow.id);
+    const survivor = remaining.find((m) => m.id === childRow.id);
+    expect(survivor).toBeDefined();
+    expect(survivor!.parentId).toBeNull();
+
+    // Survivor's message row is intact.
+    const survivorMessages = await db
+      .select({ id: messages.id })
+      .from(messages)
+      .where(eq(messages.mailboxId, childRow.id));
+    expect(survivorMessages.map((m) => m.id)).toEqual([survivorMessageId]);
+
+    // Exactly one mailbox.deleted event keyed at the parent. No event
+    // for the survivor; no per-message events for its preserved messages.
+    const events = await db.select().from(domainEvents);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.eventType).toBe("mailbox.deleted");
+    expect(events[0]!.aggregateId).toBe(parentRow.id);
   });
 });
