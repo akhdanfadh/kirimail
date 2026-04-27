@@ -27,12 +27,14 @@ export const SENT_ROW_REAPER_THRESHOLD_MS = 6 * 60 * 60 * 1000;
  */
 export const SENDING_ROW_REAPER_THRESHOLD_MS = 60 * 60 * 1000;
 
+export const OUTBOUND_REAPER_QUEUE = "outbound-reaper";
+
 /** How often the reaper runs. Standard cron expression consumed by pg-boss. */
 const REAPER_CRON_SCHEDULE = "*/15 * * * *";
 
 /** Register the outbound-reaper queue, handler, and cron schedule. */
 export async function registerOutboundReaper(boss: PgBoss): Promise<void> {
-  await boss.createQueue("outbound-reaper", {
+  await boss.createQueue(OUTBOUND_REAPER_QUEUE, {
     policy: "stately",
     // retryLimit: 0 - the 15-min cron is a more reliable retry than pg-boss's backoff,
     // and the reap statements are idempotent across runs (a second pass returns empty
@@ -42,21 +44,21 @@ export async function registerOutboundReaper(boss: PgBoss): Promise<void> {
     expireInSeconds: 120,
   });
 
-  await boss.work("outbound-reaper", { batchSize: 1 }, async (jobs: Job[]): Promise<void> => {
+  await boss.work(OUTBOUND_REAPER_QUEUE, { batchSize: 1 }, async (jobs: Job[]): Promise<void> => {
     const job = jobs[0]!;
-    console.log(`[outbound-reaper] running (trigger: ${job.id})`);
+    console.log(`[${OUTBOUND_REAPER_QUEUE}] running (trigger: ${job.id})`);
     try {
       await reapStaleSentRows();
       await reapStaleSendingRows();
     } catch (err) {
       // retryLimit: 0 means pg-boss drops the job on failure; make sure at least
       // one error line with context lands in operator logs before the rethrow.
-      console.error("[outbound-reaper] sweep failed:", err);
+      console.error(`[${OUTBOUND_REAPER_QUEUE}] sweep failed:`, err);
       throw err;
     }
   });
 
-  await boss.schedule("outbound-reaper", REAPER_CRON_SCHEDULE);
+  await boss.schedule(OUTBOUND_REAPER_QUEUE, REAPER_CRON_SCHEDULE);
 }
 
 /**
@@ -81,13 +83,13 @@ export async function reapStaleSentRows(): Promise<void> {
     // (outbound_messages_sent_at_matches_status_chk), so the non-null assertion is safe.
     const ageMs = now - row.sentAt!.getTime();
     console.warn(
-      `[outbound-reaper] reaped abandoned sent row ${row.id} ` +
+      `[${OUTBOUND_REAPER_QUEUE}] reaped abandoned sent row ${row.id} ` +
         `(account ${row.emailAccountId}, messageId ${row.messageId}, age ${ageMs}ms)`,
     );
   }
 
   // Trailing confirmation so quiet (zero-row) runs still show the DELETE completed.
-  console.log(`[outbound-reaper] sent-sweep complete, reaped ${reaped.length} row(s)`);
+  console.log(`[${OUTBOUND_REAPER_QUEUE}] sent-sweep complete, reaped ${reaped.length} row(s)`);
 }
 
 /**
@@ -113,10 +115,10 @@ export async function reapStaleSendingRows(): Promise<void> {
 
   for (const row of reaped) {
     console.warn(
-      `[outbound-reaper] reaped stuck sending row ${row.id} ` +
+      `[${OUTBOUND_REAPER_QUEUE}] reaped stuck sending row ${row.id} ` +
         `(account ${row.emailAccountId}, messageId ${row.messageId}, attempts ${row.attempts})`,
     );
   }
 
-  console.log(`[outbound-reaper] sending-sweep complete, reaped ${reaped.length} row(s)`);
+  console.log(`[${OUTBOUND_REAPER_QUEUE}] sending-sweep complete, reaped ${reaped.length} row(s)`);
 }

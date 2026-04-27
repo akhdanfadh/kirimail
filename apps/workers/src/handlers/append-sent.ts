@@ -12,6 +12,8 @@ import { appendToSentFolder, ImapPrimitiveNonRetriableError } from "@kirimail/ma
 import { imapCache } from "../caches";
 import { resolveImapCredentials } from "../credentials";
 
+export const APPEND_SENT_QUEUE = "append-sent";
+
 /**
  * Job payload for append-sent. The row is the source of truth; nothing else is carried.
  *
@@ -25,7 +27,7 @@ export interface AppendSentJobData {
 
 /** Register the append-sent queue and handler. */
 export async function registerAppendSent(boss: PgBoss): Promise<void> {
-  await boss.createQueue("append-sent", {
+  await boss.createQueue(APPEND_SENT_QUEUE, {
     retryLimit: 3,
     retryDelay: 30,
     retryBackoff: true,
@@ -40,7 +42,7 @@ export async function registerAppendSent(boss: PgBoss): Promise<void> {
   // appendToMailbox's `pending` map, so higher concurrency here only helps
   // multi-account throughput.
   await boss.work(
-    "append-sent",
+    APPEND_SENT_QUEUE,
     { batchSize: 1, localConcurrency: 5 },
     async (jobs: Job<AppendSentJobData>[]): Promise<void> => {
       const job = jobs[0]!;
@@ -56,13 +58,13 @@ export async function registerAppendSent(boss: PgBoss): Promise<void> {
         // error column or terminal `append_failed` status here.
         if (error instanceof ImapPrimitiveNonRetriableError) {
           console.error(
-            `[append-sent] row ${job.data.outboundMessageId} discarded (deterministic IMAP failure, non-retriable):`,
+            `[${APPEND_SENT_QUEUE}] row ${job.data.outboundMessageId} discarded (deterministic IMAP failure, non-retriable):`,
             error.message,
           );
           return;
         }
         // Single-line context before pg-boss logs the generic failure itself.
-        console.error(`[append-sent] row ${job.data.outboundMessageId} failed:`, error);
+        console.error(`[${APPEND_SENT_QUEUE}] row ${job.data.outboundMessageId} failed:`, error);
         throw error;
       }
     },
@@ -80,7 +82,7 @@ async function handleAppendSent(data: AppendSentJobData): Promise<void> {
   const row = await getOutboundMessageById(db, outboundMessageId);
   if (!row) {
     // Race with concurrent cleanup (reaper, manual SQL) - benign.
-    console.warn(`[append-sent] row ${outboundMessageId} not found, skipping`);
+    console.warn(`[${APPEND_SENT_QUEUE}] row ${outboundMessageId} not found, skipping`);
     return;
   }
 
@@ -90,7 +92,7 @@ async function handleAppendSent(data: AppendSentJobData): Promise<void> {
     // deletion, so this branch is unreachable for rows produced through the
     // repository. Returning avoids double-appending if one ever appears.
     console.warn(
-      `[append-sent] row ${outboundMessageId} in unexpected status "${row.status}", skipping`,
+      `[${APPEND_SENT_QUEUE}] row ${outboundMessageId} in unexpected status "${row.status}", skipping`,
     );
     return;
   }
@@ -101,7 +103,7 @@ async function handleAppendSent(data: AppendSentJobData): Promise<void> {
     // a tiny window between detach and cascade running. Let it go; the row
     // will be gone on the next lookup anyway.
     console.warn(
-      `[append-sent] account ${row.emailAccountId} not found for row ${outboundMessageId}, skipping`,
+      `[${APPEND_SENT_QUEUE}] account ${row.emailAccountId} not found for row ${outboundMessageId}, skipping`,
     );
     return;
   }
@@ -113,7 +115,7 @@ async function handleAppendSent(data: AppendSentJobData): Promise<void> {
     // the reaper deletes it after the threshold without ever appending.
     // Escalate to error: the user-visible outcome is a missing Sent copy.
     console.error(
-      `[append-sent] no Sent mailbox mapped for account ${row.emailAccountId}, leaving row ${outboundMessageId} for reaper`,
+      `[${APPEND_SENT_QUEUE}] no Sent mailbox mapped for account ${row.emailAccountId}, leaving row ${outboundMessageId} for reaper`,
     );
     return;
   }
@@ -132,11 +134,11 @@ async function handleAppendSent(data: AppendSentJobData): Promise<void> {
 
   if (result.deduped) {
     console.log(
-      `[append-sent] dedup hit for row ${outboundMessageId} (account ${row.emailAccountId}, uid ${result.uid}), row deleted`,
+      `[${APPEND_SENT_QUEUE}] dedup hit for row ${outboundMessageId} (account ${row.emailAccountId}, uid ${result.uid}), row deleted`,
     );
   } else {
     console.log(
-      `[append-sent] appended row ${outboundMessageId} to "${mailboxPath}" (account ${row.emailAccountId}, uid ${result.uid ?? "unknown"}), row deleted`,
+      `[${APPEND_SENT_QUEUE}] appended row ${outboundMessageId} to "${mailboxPath}" (account ${row.emailAccountId}, uid ${result.uid ?? "unknown"}), row deleted`,
     );
   }
 }

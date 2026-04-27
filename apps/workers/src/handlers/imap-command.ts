@@ -46,9 +46,11 @@ type ImapCommandJobData =
       uidValidity?: number;
     };
 
+export const IMAP_COMMAND_QUEUE = "imap-command";
+
 /** Register the imap-command queue and handler. */
 export async function registerImapCommand(boss: PgBoss): Promise<void> {
-  await boss.createQueue("imap-command", {
+  await boss.createQueue(IMAP_COMMAND_QUEUE, {
     retryLimit: 3,
     retryDelay: 30,
     retryBackoff: true,
@@ -62,12 +64,14 @@ export async function registerImapCommand(boss: PgBoss): Promise<void> {
   // throughput. Hardcoded - no need for per-deployment tuning until usage
   // data or localGroupConcurrency-based fairness suggests otherwise.
   await boss.work(
-    "imap-command",
+    IMAP_COMMAND_QUEUE,
     { batchSize: 1, localConcurrency: 5 },
     async (jobs: Job<ImapCommandJobData>[]): Promise<void> => {
       const job = jobs[0]!;
       const { emailAccountId } = job.data;
-      console.log(`[imap-command] processing ${job.data.type} for account ${emailAccountId}`);
+      console.log(
+        `[${IMAP_COMMAND_QUEUE}] processing ${job.data.type} for account ${emailAccountId}`,
+      );
 
       try {
         await executeImapCommand(job.data);
@@ -81,13 +85,13 @@ export async function registerImapCommand(boss: PgBoss): Promise<void> {
         // pg-boss can route there instead.
         if (error instanceof ImapPrimitiveNonRetriableError) {
           console.error(
-            `[imap-command] ${job.data.type} for account ${emailAccountId} discarded (deterministic failure, non-retriable):`,
+            `[${IMAP_COMMAND_QUEUE}] ${job.data.type} for account ${emailAccountId} discarded (deterministic failure, non-retriable):`,
             error.message,
           );
           return;
         }
         console.error(
-          `[imap-command] ${job.data.type} for account ${emailAccountId} failed:`,
+          `[${IMAP_COMMAND_QUEUE}] ${job.data.type} for account ${emailAccountId} failed:`,
           error,
         );
         throw error;
@@ -113,7 +117,7 @@ async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
   // No UIDs means nothing to do - skip the DB lookup and connection overhead.
   if (data.uids.length === 0) {
     console.warn(
-      `[imap-command] ${data.type} with empty UIDs for account ${data.emailAccountId}, skipping`,
+      `[${IMAP_COMMAND_QUEUE}] ${data.type} with empty UIDs for account ${data.emailAccountId}, skipping`,
     );
     return;
   }
@@ -121,7 +125,7 @@ async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
   const account = await getEmailAccountById(db, data.emailAccountId);
   if (!account) {
     // Account was deleted - no point retrying
-    console.warn(`[imap-command] account ${data.emailAccountId} not found, skipping`);
+    console.warn(`[${IMAP_COMMAND_QUEUE}] account ${data.emailAccountId} not found, skipping`);
     return;
   }
 
@@ -142,7 +146,7 @@ async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
         });
         if (!result.ok) {
           console.warn(
-            `[imap-command] store-flags skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
+            `[${IMAP_COMMAND_QUEUE}] store-flags skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
           );
         }
         break;
@@ -161,7 +165,7 @@ async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
         });
         if (!result.ok) {
           console.warn(
-            `[imap-command] move skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}" -> "${data.destination}"`,
+            `[${IMAP_COMMAND_QUEUE}] move skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}" -> "${data.destination}"`,
           );
         }
         break;
@@ -174,7 +178,7 @@ async function executeImapCommand(data: ImapCommandJobData): Promise<void> {
         });
         if (!result.ok) {
           console.warn(
-            `[imap-command] expunge skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
+            `[${IMAP_COMMAND_QUEUE}] expunge skipped (uid-validity stale) for account ${data.emailAccountId} mailbox "${data.mailbox}"`,
           );
         }
         break;

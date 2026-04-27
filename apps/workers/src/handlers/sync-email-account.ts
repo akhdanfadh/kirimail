@@ -7,9 +7,11 @@ import { discoverMailboxes, syncMailboxes } from "@kirimail/mail";
 import { resolveImapCredentials } from "../credentials";
 import { EVENT_DISPATCHER_QUEUE } from "./event-dispatcher";
 
+export const SYNC_EMAIL_ACCOUNT_QUEUE = "sync-email-account";
+
 /** Register the sync-email-account queue and handler. */
 export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
-  await boss.createQueue("sync-email-account", {
+  await boss.createQueue(SYNC_EMAIL_ACCOUNT_QUEUE, {
     policy: "stately",
     retryLimit: 3,
     retryDelay: 30,
@@ -25,19 +27,19 @@ export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
   // each sync opens its own IMAP connection and does bulk DB writes -
   // higher values pressure both the mail server and Postgres.
   await boss.work(
-    "sync-email-account",
+    SYNC_EMAIL_ACCOUNT_QUEUE,
     { batchSize: 1, localConcurrency: 3 },
     async (jobs: Job<{ emailAccountId: string }>[]): Promise<void> => {
       const job = jobs[0]!;
       const { emailAccountId } = job.data;
-      console.log(`[sync-email-account] starting sync for account ${emailAccountId}`);
+      console.log(`[${SYNC_EMAIL_ACCOUNT_QUEUE}] starting sync for account ${emailAccountId}`);
 
       let eventsEmitted = 0;
       try {
         eventsEmitted = await syncEmailAccount(emailAccountId);
       } catch (err) {
         // Log with account context before pg-boss captures the error for retry
-        console.error(`[sync-email-account] account ${emailAccountId} failed:`, err);
+        console.error(`[${SYNC_EMAIL_ACCOUNT_QUEUE}] account ${emailAccountId} failed:`, err);
         throw err;
       }
 
@@ -50,7 +52,7 @@ export async function registerSyncEmailAccount(boss: PgBoss): Promise<void> {
           await boss.send(EVENT_DISPATCHER_QUEUE, {});
         } catch (err) {
           console.error(
-            `[sync-email-account] failed to enqueue ${EVENT_DISPATCHER_QUEUE} (account ${emailAccountId})`,
+            `[${SYNC_EMAIL_ACCOUNT_QUEUE}] failed to enqueue ${EVENT_DISPATCHER_QUEUE} (account ${emailAccountId})`,
             err,
           );
         }
@@ -76,7 +78,7 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
   // 1. Fetch account with credentials
   const account = await getEmailAccountById(db, accountId);
   if (!account) {
-    console.warn(`[sync-email-account] account ${accountId} not found, skipping`);
+    console.warn(`[${SYNC_EMAIL_ACCOUNT_QUEUE}] account ${accountId} not found, skipping`);
     return 0;
   }
 
@@ -87,7 +89,7 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
   const { mailboxes } = await discoverMailboxes(creds);
   if (mailboxes.length === 0) {
     console.warn(
-      `[sync-email-account] empty discovery for account ${accountId}, skipping reconciliation`,
+      `[${SYNC_EMAIL_ACCOUNT_QUEUE}] empty discovery for account ${accountId}, skipping reconciliation`,
     );
     return 0;
   }
@@ -99,7 +101,7 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
   );
   if (inserted > 0 || updated > 0 || removed > 0) {
     console.log(
-      `[sync-email-account] reconciled account ${accountId}: ` +
+      `[${SYNC_EMAIL_ACCOUNT_QUEUE}] reconciled account ${accountId}: ` +
         `+${inserted} ~${updated} -${removed} mailbox(es)` +
         (messagesDeleted > 0 ? `, -${messagesDeleted} message(s) from removed mailbox(es)` : ""),
     );
@@ -112,7 +114,7 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
   }
 
   if (syncInputs.length === 0) {
-    console.log(`[sync-email-account] account ${accountId}: no mailboxes to sync`);
+    console.log(`[${SYNC_EMAIL_ACCOUNT_QUEUE}] account ${accountId}: no mailboxes to sync`);
     return 0;
   }
 
@@ -150,12 +152,12 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
       totalDeleted += messagesDeleted;
     } catch (error) {
       dbErrors += 1;
-      console.error(`[sync-email-account] db write "${path}" failed:`, error);
+      console.error(`[${SYNC_EMAIL_ACCOUNT_QUEUE}] db write "${path}" failed:`, error);
     }
   }
 
   for (const [path, error] of imapErrors) {
-    console.error(`[sync-email-account] imap fetch "${path}" failed:`, error.message);
+    console.error(`[${SYNC_EMAIL_ACCOUNT_QUEUE}] imap fetch "${path}" failed:`, error.message);
   }
 
   // Mailboxes in neither results nor imapErrors were skipped (e.g., connection
@@ -163,7 +165,7 @@ export async function syncEmailAccount(accountId: string): Promise<number> {
   const skipped = syncInputs.length - results.size - imapErrors.size;
 
   console.log(
-    `[sync-email-account] account ${accountId}: ` +
+    `[${SYNC_EMAIL_ACCOUNT_QUEUE}] account ${accountId}: ` +
       `${results.size} synced, ${imapErrors.size} imap errors, ${dbErrors} db errors` +
       `${skipped > 0 ? `, ${skipped} skipped` : ""}, ` +
       `+${totalCreated} -${totalDeleted} messages`,

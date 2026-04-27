@@ -15,6 +15,9 @@ import { classifySmtpError } from "@kirimail/mail";
 
 import { smtpCache } from "../caches";
 import { resolveSmtpCredentials } from "../credentials";
+import { APPEND_SENT_QUEUE } from "./append-sent";
+
+export const SEND_MESSAGE_QUEUE = "send-message";
 
 /**
  * Job payload for send-message. DB row is the source of truth; nothing else
@@ -39,7 +42,7 @@ export interface SendMessageAttempt {
 
 /** Register the send-message queue and handler. */
 export async function registerSendMessage(boss: PgBoss): Promise<void> {
-  await boss.createQueue("send-message", {
+  await boss.createQueue(SEND_MESSAGE_QUEUE, {
     retryLimit: 3,
     retryDelay: 30,
     retryBackoff: true,
@@ -52,7 +55,7 @@ export async function registerSendMessage(boss: PgBoss): Promise<void> {
   // sends serialize through the transport cache (maxConnections: 1).
   // includeMetadata: exposes retryCount/retryLimit for exhaustion detection.
   await boss.work<SendMessageJobData>(
-    "send-message",
+    SEND_MESSAGE_QUEUE,
     { batchSize: 1, localConcurrency: 5, includeMetadata: true },
     async (jobs: JobWithMetadata<SendMessageJobData>[]): Promise<void> => {
       const job = jobs[0]!;
@@ -80,7 +83,7 @@ export async function handleSendMessage(
   const row = await getOutboundMessageById(db, outboundMessageId);
   if (!row) {
     // Race with reaper/manual SQL - benign. Job completes without throwing.
-    console.warn(`[send-message] row ${outboundMessageId} not found, skipping`);
+    console.warn(`[${SEND_MESSAGE_QUEUE}] row ${outboundMessageId} not found, skipping`);
     return;
   }
 
@@ -89,7 +92,7 @@ export async function handleSendMessage(
     // transitions below would no-op anyway; returning early saves the
     // round-trip and keeps the log clearer.
     console.warn(
-      `[send-message] row ${outboundMessageId} in status "${row.status}" (expected "pending"), skipping`,
+      `[${SEND_MESSAGE_QUEUE}] row ${outboundMessageId} in status "${row.status}" (expected "pending"), skipping`,
     );
     return;
   }
@@ -119,7 +122,7 @@ export async function handleSendMessage(
       `SMTP identity ${row.smtpIdentityId} not found`,
     );
     console.error(
-      `[send-message] row ${row.id} references missing identity ${row.smtpIdentityId}, marked failed`,
+      `[${SEND_MESSAGE_QUEUE}] row ${row.id} references missing identity ${row.smtpIdentityId}, marked failed`,
     );
     return;
   }
@@ -134,7 +137,7 @@ export async function handleSendMessage(
       `SMTP identity ${identity.id} belongs to account ${identity.emailAccountId}, not ${row.emailAccountId}`,
     );
     console.error(
-      `[send-message] row ${row.id} cross-account mismatch (identity account ${identity.emailAccountId} vs row account ${row.emailAccountId}), marked failed`,
+      `[${SEND_MESSAGE_QUEUE}] row ${row.id} cross-account mismatch (identity account ${identity.emailAccountId} vs row account ${row.emailAccountId}), marked failed`,
     );
     return;
   }
@@ -153,7 +156,7 @@ export async function handleSendMessage(
       "precondition",
       `Failed to decrypt SMTP credentials: ${message}`,
     );
-    console.error(`[send-message] row ${row.id} credential decrypt failed:`, err);
+    console.error(`[${SEND_MESSAGE_QUEUE}] row ${row.id} credential decrypt failed:`, err);
     return;
   }
 
@@ -162,7 +165,7 @@ export async function handleSendMessage(
   if (!claimed) {
     // Row transitioned out of `pending` between the status check and here -
     // a concurrent worker's markSending, or a reaper / manual SQL moved it.
-    console.warn(`[send-message] row ${row.id} no longer in pending, skipping`);
+    console.warn(`[${SEND_MESSAGE_QUEUE}] row ${row.id} no longer in pending, skipping`);
     return;
   }
 
@@ -182,7 +185,7 @@ export async function handleSendMessage(
       if (attempt.retryCount >= attempt.retryLimit) {
         await markOutboundMessageFailed(db, row.id, classified.category, classified.message);
         console.error(
-          `[send-message] row ${row.id} ${classified.category} error on final attempt ` +
+          `[${SEND_MESSAGE_QUEUE}] row ${row.id} ${classified.category} error on final attempt ` +
             `(retryCount=${attempt.retryCount}, retryLimit=${attempt.retryLimit}), marked failed:`,
           classified.message,
         );
@@ -197,7 +200,7 @@ export async function handleSendMessage(
         classified.message,
       );
       console.warn(
-        `[send-message] row ${row.id} ${classified.category} error, resetting to pending for retry:`,
+        `[${SEND_MESSAGE_QUEUE}] row ${row.id} ${classified.category} error, resetting to pending for retry:`,
         classified.message,
       );
       throw err;
@@ -205,7 +208,7 @@ export async function handleSendMessage(
     // auth | recipient | protocol: deterministic, do not retry.
     await markOutboundMessageFailed(db, row.id, classified.category, classified.message);
     console.error(
-      `[send-message] row ${row.id} ${classified.category} error, marked failed:`,
+      `[${SEND_MESSAGE_QUEUE}] row ${row.id} ${classified.category} error, marked failed:`,
       classified.message,
     );
     return;
@@ -226,7 +229,7 @@ export async function handleSendMessage(
       `All envelope recipients rejected: ${rejectedList}`,
     );
     console.error(
-      `[send-message] row ${row.id} SMTP resolved with zero accepted recipients (rejected: ${rejectedList}), marked failed`,
+      `[${SEND_MESSAGE_QUEUE}] row ${row.id} SMTP resolved with zero accepted recipients (rejected: ${rejectedList}), marked failed`,
     );
     return;
   }
@@ -237,7 +240,7 @@ export async function handleSendMessage(
     // transitions to `sent` with the rejected addresses persisted so
     // consumers can see the partial outcome rather than a plain "sent".
     console.warn(
-      `[send-message] row ${row.id} partial recipient rejection ` +
+      `[${SEND_MESSAGE_QUEUE}] row ${row.id} partial recipient rejection ` +
         `(accepted: ${result.accepted.join(", ")}; rejected: ${result.rejected.join(", ")})`,
     );
   }
@@ -248,7 +251,7 @@ export async function handleSendMessage(
     // Row mutated between send and markSent (reaper / admin SQL). Message
     // is already on the wire; nothing to roll back and append-sent is skipped.
     console.warn(
-      `[send-message] row ${row.id} transitioned out of "sending" before markSent; SMTP already delivered`,
+      `[${SEND_MESSAGE_QUEUE}] row ${row.id} transitioned out of "sending" before markSent; SMTP already delivered`,
     );
     return;
   }
@@ -268,16 +271,16 @@ export async function handleSendMessage(
     // is designed or append-reliability SLOs make the one-site patch worth it.
     try {
       await boss.send(
-        "append-sent",
+        APPEND_SENT_QUEUE,
         { outboundMessageId: row.id },
         { singletonKey: row.messageId },
       );
       console.log(
-        `[send-message] row ${row.id} sent, append-sent enqueued (messageId ${row.messageId})`,
+        `[${SEND_MESSAGE_QUEUE}] row ${row.id} sent, append-sent enqueued (messageId ${row.messageId})`,
       );
     } catch (err) {
       console.error(
-        `[send-message] row ${row.id} SENT via SMTP but append-sent enqueue FAILED; ` +
+        `[${SEND_MESSAGE_QUEUE}] row ${row.id} SENT via SMTP but append-sent enqueue FAILED; ` +
           `Sent-folder copy will be lost when the sent-row reaper deletes the row. ` +
           `messageId=${row.messageId}`,
         err,
@@ -292,11 +295,11 @@ export async function handleSendMessage(
     try {
       await deleteOutboundMessage(db, row.id);
       console.log(
-        `[send-message] row ${row.id} sent with appendToSent=false, row deleted (messageId ${row.messageId})`,
+        `[${SEND_MESSAGE_QUEUE}] row ${row.id} sent with appendToSent=false, row deleted (messageId ${row.messageId})`,
       );
     } catch (err) {
       console.error(
-        `[send-message] row ${row.id} SENT via SMTP but row delete FAILED; ` +
+        `[${SEND_MESSAGE_QUEUE}] row ${row.id} SENT via SMTP but row delete FAILED; ` +
           `sent-row reaper will clean it up. messageId=${row.messageId}`,
         err,
       );
