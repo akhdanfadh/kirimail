@@ -1,6 +1,10 @@
 import type { AttachmentMetadata } from "@kirimail/shared";
 import type { MessageStructureObject } from "imapflow";
 
+// -----------------------------------------------------------------------------
+// Parse Attachments
+// -----------------------------------------------------------------------------
+
 /**
  * Flatten IMAP BODYSTRUCTURE tree into attachment metadata. Returns `[]` when
  * the server omits BODYSTRUCTURE or no leaf qualifies as an attachment.
@@ -91,6 +95,89 @@ function walk(
     }
   }
 }
+
+// -----------------------------------------------------------------------------
+// Parse Text Parts
+// -----------------------------------------------------------------------------
+
+/**
+ * One text MIME part eligible for body indexing. Path matches IMAP
+ * `BODY[part]` addressing (e.g., `"1"`, `"1.1"`, `"2.1.1"`); type is
+ * narrowed to the two kinds that carry user-readable body content.
+ */
+export interface TextPartLocation {
+  /** IMAP body-part address suitable for `client.download(uid, partPath)` */
+  partPath: string;
+  /** "plain" for `text/plain`, "html" for `text/html`. */
+  type: "plain" | "html";
+}
+
+/**
+ * Walk a BODYSTRUCTURE tree and emit the text/plain and text/html leaves that hold
+ * the message's user-readable body. Forwarded messages (`message/rfc822` parts) are
+ * recursed into, so a search for content embedded in a forward matches the outer message.
+ * Returns `[]` when the server omits BODYSTRUCTURE or no eligible leaf is found.
+ * See {@link walkText} for the emission reasoning.
+ *
+ * @see https://www.rfc-editor.org/rfc/rfc3501#section-7.4.2 - BODYSTRUCTURE grammar
+ */
+export function parseTextParts(root: MessageStructureObject | undefined): TextPartLocation[] {
+  if (!root) return [];
+  const out: TextPartLocation[] = [];
+  walkText(root, null, out);
+  return out;
+}
+
+/**
+ * Recursive traversal for classifying MIME leaves as text body parts.
+ *
+ * @param node Current BODYSTRUCTURE node being visited.
+ * @param parentType MIME type of the direct parent, or null at the root.
+ * @param out Accumulator for emitted text-part locations, mutated in place.
+ */
+function walkText(
+  node: MessageStructureObject,
+  parentType: string | null,
+  out: TextPartLocation[],
+): void {
+  const type = node.type.toLowerCase();
+  const disposition = node.disposition?.toLowerCase();
+  const isMultipart = type.startsWith("multipart/");
+
+  // Protocol-machinery leaves (signature, encrypted control, delivery-status)
+  // are not body content. Same filter parseAttachments uses above.
+  if (!isMultipart && isProtocolPart(type, parentType)) return;
+
+  // Only text/plain and text/html count as body for indexing. Other text/* subtypes
+  // (text/calendar in meeting invites, text/x-vcard) carry structured data or rendering
+  // alternatives - they index poorly and aren't what a search-for-prose query expects.
+  //
+  // `Content-Disposition: attachment` always overrides the type check: a
+  // `.txt` or `.html` file genuinely attached to a message is a file, not
+  // body. parseAttachments above will pick it up via its own classification.
+  const bodyType = type === "text/plain" ? "plain" : type === "text/html" ? "html" : null;
+  if (!isMultipart && disposition !== "attachment" && bodyType !== null) {
+    out.push({ partPath: node.part ?? "1", type: bodyType });
+  }
+
+  // multipart/encrypted wraps opaque ciphertext - the inner content is
+  // unreadable without decryption (out of scope today), so there is no
+  // indexable text. isProtocolPart already drops its known children
+  // (pgp-encrypted control + octet-stream blob); this whole-subtree skip
+  // is a safety net for future schemes wrapping an unrecognized inner
+  // type we'd otherwise leak as raw bytes.
+  if (type === "multipart/encrypted") return;
+
+  if (node.childNodes) {
+    for (const child of node.childNodes) {
+      walkText(child, type, out);
+    }
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
 
 /**
  * True when a leaf is MIME-protocol machinery rather than user content,

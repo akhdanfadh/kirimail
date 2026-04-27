@@ -2,7 +2,7 @@ import type { MessageStructureObject } from "imapflow";
 
 import { describe, expect, it } from "vitest";
 
-import { isEncryptedBodyStructure, parseAttachments } from "../parser";
+import { isEncryptedBodyStructure, parseAttachments, parseTextParts } from "../parser";
 
 // ---------------------------------------------------------------------------
 // Fixture builders - match imapflow's MessageStructureObject shape literally
@@ -486,6 +486,183 @@ describe("parseAttachments", () => {
     ]);
 
     expect(parseAttachments(tree)[0]?.disposition).toBeNull();
+  });
+});
+
+describe("parseTextParts", () => {
+  it("returns empty array for undefined input", () => {
+    expect(parseTextParts(undefined)).toEqual([]);
+  });
+
+  it("emits a single text/plain leaf at root with synthesized partPath", () => {
+    // Single-part messages have no `part` set on the root in imapflow's
+    // shape; IMAP addresses the body as BODY[1], so the walker synthesizes "1".
+    expect(parseTextParts({ type: "text/plain", size: 100 })).toEqual([
+      { partPath: "1", type: "plain" },
+    ]);
+  });
+
+  it("emits a single text/html leaf at root", () => {
+    expect(parseTextParts({ type: "text/html", size: 200 })).toEqual([
+      { partPath: "1", type: "html" },
+    ]);
+  });
+
+  it("emits both subparts of multipart/alternative([plain, html])", () => {
+    const tree = multipartAlternative([textPlain(), textHtml({ part: "2" })]);
+    expect(parseTextParts(tree)).toEqual([
+      { partPath: "1", type: "plain" },
+      { partPath: "2", type: "html" },
+    ]);
+  });
+
+  it("emits text body parts inside multipart/mixed alongside attachments", () => {
+    // Real-world shape: a forwarded message with a body and a PDF. Only the alternative's
+    // text leaves are body; the PDF is captured by parseAttachments separately.
+    const tree = multipartMixed([
+      multipartAlternative([textPlain({ part: "1.1" }), textHtml({ part: "1.2" })]),
+      {
+        part: "2",
+        type: "application/pdf",
+        size: 500,
+        disposition: "attachment",
+        dispositionParameters: { filename: "x.pdf" },
+      },
+    ]);
+    expect(parseTextParts(tree)).toEqual([
+      { partPath: "1.1", type: "plain" },
+      { partPath: "1.2", type: "html" },
+    ]);
+  });
+
+  it("emits text body parts inside multipart/related (HTML with embedded images)", () => {
+    const tree = multipartRelated([
+      multipartAlternative([textPlain({ part: "1.1" }), textHtml({ part: "1.2" })]),
+      { part: "2", type: "image/png", size: 1, id: "logo@example.com", disposition: "inline" },
+    ]);
+    expect(parseTextParts(tree)).toEqual([
+      { partPath: "1.1", type: "plain" },
+      { partPath: "1.2", type: "html" },
+    ]);
+  });
+
+  it("emits the cleartext body inside multipart/signed and skips the signature", () => {
+    // The signature is protocol machinery, filtered by isProtocolPart. The signed
+    // cleartext body lives in the sibling subtree. Real BODYSTRUCTURE numbers the
+    // alternative subtree as "1" with leaves "1.1"/"1.2", and the signature as the
+    // second sibling at "2"; using the realistic numbering keeps the fixture honest
+    // about how IMAP would address the parts, even though parseTextParts filters by
+    // type-and-parent rather than path.
+    const tree = multipartSigned([
+      multipartAlternative([textPlain({ part: "1.1" }), textHtml({ part: "1.2" })]),
+      { part: "2", type: "application/pgp-signature", size: 512 },
+    ]);
+    expect(parseTextParts(tree)).toEqual([
+      { partPath: "1.1", type: "plain" },
+      { partPath: "1.2", type: "html" },
+    ]);
+  });
+
+  it("returns [] for multipart/encrypted (opaque ciphertext, no indexable body)", () => {
+    const tree = multipartEncrypted([
+      { part: "1", type: "application/pgp-encrypted", size: 11 },
+      { part: "2", type: "application/octet-stream", size: 5000 },
+    ]);
+    expect(parseTextParts(tree)).toEqual([]);
+  });
+
+  it("recurses into a forwarded message/rfc822 body and emits its inner text leaves", () => {
+    // A forwarded message embeds the original as a message/rfc822 part with
+    // its own body subtree. The walker descends into it so the embedded
+    // text/plain and text/html leaves emit as additional outer-message body
+    // parts - making content from a forward searchable on the outer message.
+    const tree = multipartMixed([
+      textPlain(),
+      {
+        part: "2",
+        type: "message/rfc822",
+        size: 1000,
+        childNodes: [
+          multipartAlternative(
+            [
+              { part: "2.1", type: "text/plain", size: 10 },
+              { part: "2.2", type: "text/html", size: 20 },
+            ],
+            { part: "2" },
+          ),
+        ],
+      },
+    ]);
+    expect(parseTextParts(tree)).toEqual([
+      { partPath: "1", type: "plain" },
+      { partPath: "2.1", type: "plain" },
+      { partPath: "2.2", type: "html" },
+    ]);
+  });
+
+  it("emits the human-readable text part of a multipart/report and skips report machinery", () => {
+    // The notification text is what a recipient reads; delivery-status,
+    // rfc822-headers, and the bounced rfc822 are all protocol-machinery.
+    const tree = multipartReport([
+      textPlain(),
+      { part: "2", type: "message/delivery-status", size: 200 },
+      { part: "3", type: "text/rfc822-headers", size: 300 },
+      {
+        part: "4",
+        type: "message/rfc822",
+        size: 500,
+        childNodes: [{ part: "4.1", type: "text/plain", size: 10 }],
+      },
+    ]);
+    expect(parseTextParts(tree)).toEqual([{ partPath: "1", type: "plain" }]);
+  });
+
+  it("excludes a text/plain leaf with disposition=attachment (it's a file, not body)", () => {
+    const tree = multipartMixed([
+      textPlain(),
+      textPlain({
+        part: "2",
+        size: 42,
+        disposition: "attachment",
+        dispositionParameters: { filename: "notes.txt" },
+      }),
+    ]);
+    expect(parseTextParts(tree)).toEqual([{ partPath: "1", type: "plain" }]);
+  });
+
+  it("does not emit text/calendar (not user-readable body for indexing)", () => {
+    // Meeting invite shape: alternative([plain, html, calendar]). The .ics
+    // is iCal data, not body prose; only plain+html are indexable text.
+    const tree = multipartAlternative([
+      textPlain(),
+      textHtml({ part: "2" }),
+      { part: "3", type: "text/calendar", size: 300, parameters: { method: "REQUEST" } },
+    ]);
+    expect(parseTextParts(tree)).toEqual([
+      { partPath: "1", type: "plain" },
+      { partPath: "2", type: "html" },
+    ]);
+  });
+
+  it("classifies correctly when the server returns uppercase type and disposition", () => {
+    const tree: MessageStructureObject = {
+      type: "MULTIPART/ALTERNATIVE",
+      childNodes: [
+        { part: "1", type: "TEXT/PLAIN", size: 1 },
+        { part: "2", type: "TEXT/HTML", size: 2 },
+        {
+          part: "3",
+          type: "TEXT/PLAIN",
+          size: 3,
+          disposition: "ATTACHMENT",
+          dispositionParameters: { filename: "x.txt" },
+        },
+      ],
+    };
+    expect(parseTextParts(tree)).toEqual([
+      { partPath: "1", type: "plain" },
+      { partPath: "2", type: "html" },
+    ]);
   });
 });
 

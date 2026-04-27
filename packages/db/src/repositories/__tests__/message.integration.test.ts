@@ -49,7 +49,8 @@ describe("getMessageWithOwnership", () => {
     // catches that.
     const userId = await createTestUser(db);
     const emailAccountId = await createTestEmailAccount(db, userId);
-    const mailboxId = await createTestMailbox(db, emailAccountId);
+    const mailboxPath = "INBOX/Archive 2026";
+    const mailboxId = await createTestMailbox(db, emailAccountId, { path: mailboxPath });
 
     const messageId = generateId();
     const internalDate = new Date("2026-01-01T00:00:00Z");
@@ -90,6 +91,7 @@ describe("getMessageWithOwnership", () => {
       message: seeded,
       emailAccountId,
       userId,
+      mailboxPath,
     });
   });
 
@@ -112,7 +114,7 @@ describe("getMessageWithOwnership", () => {
     // account) shows up as a crossed assertion.
     const user1 = await createTestUser(db);
     const account1 = await createTestEmailAccount(db, user1);
-    const mailbox1 = await createTestMailbox(db, account1);
+    const mailbox1 = await createTestMailbox(db, account1, { path: "INBOX" });
     const message1 = generateId();
     await db.insert(messages).values({
       id: message1,
@@ -124,7 +126,7 @@ describe("getMessageWithOwnership", () => {
 
     const user2 = await createTestUser(db);
     const account2 = await createTestEmailAccount(db, user2);
-    const mailbox2 = await createTestMailbox(db, account2);
+    const mailbox2 = await createTestMailbox(db, account2, { path: "Archive" });
     const message2 = generateId();
     await db.insert(messages).values({
       id: message2,
@@ -138,11 +140,13 @@ describe("getMessageWithOwnership", () => {
       message: { id: message1, mailboxId: mailbox1 },
       emailAccountId: account1,
       userId: user1,
+      mailboxPath: "INBOX",
     });
     expect(await getMessageWithOwnership(db, message2)).toMatchObject({
       message: { id: message2, mailboxId: mailbox2 },
       emailAccountId: account2,
       userId: user2,
+      mailboxPath: "Archive",
     });
   });
 });

@@ -1,3 +1,4 @@
+export type { FetchMessageBodyInput, FetchMessageBodyResult } from "./body-fetch";
 export type {
   AppendMessageInput,
   AppendMessageResult,
@@ -44,6 +45,7 @@ export type {
 } from "./sync";
 export type { ReferencedMessage } from "./threading";
 
+export { fetchMessageBody } from "./body-fetch";
 export {
   appendMessage,
   expungeMessages,

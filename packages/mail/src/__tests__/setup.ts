@@ -83,6 +83,12 @@ class = "individual"
 name = "mailboxuploaduser"
 secret = "testpass"
 email.0000 = "mailboxuploaduser@localhost"
+
+[directory."memory".principals.0007]
+class = "individual"
+name = "bodyfetchuser"
+secret = "testpass"
+email.0000 = "bodyfetchuser@localhost"
 `.trimStart();
 
 // ---------------------------------------------------------------------------

@@ -9,8 +9,8 @@ import { emailAccounts, mailboxes, messages } from "../schema";
 type Db = NodePgDatabase<typeof schema>;
 
 /**
- * A {@link messages} row together with the account it belongs to
- * (`emailAccountId`) and the user who owns that account (`userId`).
+ * A {@link messages} row together with the email account it belongs to, the
+ * user who owns that account, and the IMAP path of the mailbox holding it.
  *
  * System-scoped, NOT an authorization check. This shape is for workers that
  * already trust the `messageId` they were given (e.g., the `message.synced`
@@ -30,12 +30,13 @@ export interface MessageWithOwnership {
   message: typeof messages.$inferSelect;
   emailAccountId: string;
   userId: string;
+  mailboxPath: string;
 }
 
 /**
- * Fetch one message joined to its mailbox's `emailAccountId` and that
- * account's `userId`. Returns `null` when no row matches. See
- * {@link MessageWithOwnership} for the intended caller shape - this is
+ * Fetch one message joined to its mailbox's `emailAccountId`, that account's
+ * `userId`, and the mailbox's IMAP `path`. Returns `null` when no row matches.
+ * See {@link MessageWithOwnership} for the intended caller shape - this is
  * a system-scoped read, not an authorization check.
  */
 export async function getMessageWithOwnership(
@@ -47,6 +48,7 @@ export async function getMessageWithOwnership(
       message: getColumns(messages),
       emailAccountId: mailboxes.emailAccountId,
       userId: emailAccounts.userId,
+      mailboxPath: mailboxes.path,
     })
     .from(messages)
     .innerJoin(mailboxes, eq(messages.mailboxId, mailboxes.id))
