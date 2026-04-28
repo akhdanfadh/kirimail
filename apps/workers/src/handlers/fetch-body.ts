@@ -8,6 +8,7 @@ import * as schema from "@kirimail/db/schema";
 import { asNonRetriableImapError, fetchMessageBody, ImapNonRetriableError } from "@kirimail/mail";
 import {
   getMessageDoc,
+  htmlToPlainText,
   MESSAGES_INDEX_UID,
   searchClient,
   upsertMessageBody,
@@ -116,7 +117,7 @@ export interface FetchBodyDeps {
 
 /**
  * Body-fetch worker for one message: pulls text MIME parts via {@link fetchMessageBody}
- * and partial-merges `{bodyText, bodyHtml}` onto the existing Meilisearch doc.
+ * and partial-merges `{bodyText, bodyHtml, bodyTextDerived}` onto the existing Meilisearch doc.
  *
  * Idempotent under at-least-once delivery: re-running for the same message id is
  * harmless and free, because the pre-IMAP guard below short-circuits once body
@@ -155,9 +156,13 @@ export async function handleFetchBody(deps: FetchBodyDeps): Promise<void> {
     );
     return;
   }
-  // NOTE: if a future change writes only one field (a partial-stage backfill)
-  // or adds a new body field (e.g. bodyMarkdown), this branch must be updated
-  // - otherwise duplicate runs will silently skip messages that were meant to be filled.
+  // NOTE: this guard answers "has body-fetch run?", not "is anything in body fields?".
+  // `bodyTextDerived` is intentionally NOT in this OR: it's only ever written alongside
+  // `bodyHtml` (derivation requires `bodyHtml` as input), so the `bodyHtml` arm covers
+  // it transitively. If a future change decouples `bodyTextDerived` from `bodyHtml`,
+  // or adds a new body field (e.g. `bodyMarkdown`) that fetch-body should also fill,
+  // this branch must be updated - otherwise duplicate runs will silently skip messages
+  // that were meant to be filled.
   if (preExisting.bodyText !== undefined || preExisting.bodyHtml !== undefined) {
     console.log(
       `[${FETCH_BODY_QUEUE}] message ${messageId} body fields already populated, skipping`,
@@ -208,21 +213,24 @@ export async function handleFetchBody(deps: FetchBodyDeps): Promise<void> {
     return;
   }
 
-  // TODO: When bodyHtml is set but bodyText is not (HTML-only mail with no text/plain
-  // alternative - common in mailing lists and marketing), derive bodyText from the HTML
-  // via a small html-to-text helper. Without this, the message body is unsearchable:
-  // bodyHtml is stored only for UI rendering (not in `searchableAttributes`, see
-  // @kirimail/search/config.ts), so a search for content unique to the HTML body
-  // returns zero hits. Meilisearch has no first-party HTML stripping, so the derivation
-  // is ours to do. Deferred; multipart/alternative covers the common case today.
   const { bodyText, bodyHtml } = result;
+  // HTML-only mail would be unsearchable by body content - `bodyHtml` is not
+  // in `searchableAttributes`. Derive a plain-text projection only when there
+  // was no real text/plain part; otherwise leave `bodyTextDerived` undefined.
+  //
+  // NOTE: A few senders ship a stub `text/plain` ("View this email in your
+  // browser. Click here: <url>") with the real content only in `text/html` -
+  // typically hand-rolled mailers or legacy templates that don't auto-generate
+  // plain text. Under this guard derivation skips, so HTML-only tokens miss
+  // search. Fix is dropping the `bodyText === undefined` guard; deferred until
+  // search-miss reports surface this shape.
+  const bodyTextDerived =
+    bodyText === undefined && bodyHtml !== undefined ? htmlToPlainText(bodyHtml) : undefined;
   if (bodyText === undefined && bodyHtml === undefined) {
-    // BODYSTRUCTURE had no text/plain or text/html leaves. Image-only messages,
-    // exotic MIME shapes, or every text leaf was a `Content-Disposition: attachment`
-    // file (handled by parseAttachments, not body indexing).
-    console.log(
-      `[${FETCH_BODY_QUEUE}] message ${messageId} has no text/plain or text/html parts, skipping`,
-    );
+    // BODYSTRUCTURE had no text/plain or text/html leaves - exotic MIME
+    // shapes, or every text leaf was `Content-Disposition: attachment`
+    // (handled by parseAttachments, not body indexing).
+    console.log(`[${FETCH_BODY_QUEUE}] message ${messageId} has no indexable body parts, skipping`);
     return;
   }
 
@@ -240,5 +248,5 @@ export async function handleFetchBody(deps: FetchBodyDeps): Promise<void> {
     return;
   }
 
-  await upsertMessageBody(meili, messageId, { bodyText, bodyHtml }, indexUid);
+  await upsertMessageBody(meili, messageId, { bodyText, bodyHtml, bodyTextDerived }, indexUid);
 }

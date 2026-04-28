@@ -19,6 +19,14 @@ export const MESSAGES_INDEX_UID = "messages";
  */
 type IndexableAttribute = keyof MessageDoc | `attachments.${keyof AttachmentMetadata}`;
 
+// NOTE: this index doubles as a search store (token index over headers + body)
+// and a body content store (`bodyText`/`bodyHtml` retrieved via `getDocument` for
+// the message-detail UI). When index size, restore-drill cost, or a need to expose
+// the sender's original bytes (export, raw API, forensics) makes the split worth it,
+// move authoritative body bytes to a dedicated store (Postgres column or future
+// `packages/storage` object store) and shrink this index to search-only with a tight
+// `displayedAttributes` allowlist covering only id + facet fields.
+
 /** Index settings applied by {@link ensureMeilisearchConfig}. */
 const MESSAGES_INDEX_SETTINGS: Settings = {
   // Ordered by descending relevance - earlier entries weigh more in scoring, so reorder with care.
@@ -34,6 +42,10 @@ const MESSAGES_INDEX_SETTINGS: Settings = {
     "bcc",
     "attachments.filename",
     "bodyText",
+    // Only one of `bodyText` / `bodyTextDerived` is ever populated per doc
+    // (the worker derives only when no text/plain part existed), so ordering
+    // between these two has no operational effect on relevance.
+    "bodyTextDerived",
   ] satisfies IndexableAttribute[],
   filterableAttributes: [
     "userId",
@@ -45,12 +57,29 @@ const MESSAGES_INDEX_SETTINGS: Settings = {
     "encrypted",
   ] satisfies IndexableAttribute[],
   sortableAttributes: ["receivedDate", "sizeBytes"] satisfies IndexableAttribute[],
-  // NOTE: `displayedAttributes` left at default (`["*"]`) so `getDocument(id)`
-  // can return body fields for the message-detail view (Meilisearch is the
-  // body store). Search-query primitives must pass `attributesToRetrieve`
-  // themselves to keep list-view payloads small; revisit if a per-endpoint
-  // allowlist becomes necessary.
-  // displayedAttributes: ...
+  // Explicit allowlist for `displayedAttributes` (by default it is `["*"]`):
+  // `bodyTextDerived` is searchable but omitted here so search responses and
+  // `_formatted` snippets never leak it. (See `MessageDoc` for the data-shape
+  // rationale and the `getDocument` caveat.) Cheap to change: `displayedAttributes`
+  // is a retrieval-time filter, not an indexing-time one - no re-tokenization on update.
+  displayedAttributes: [
+    "id",
+    "userId",
+    "emailAccountId",
+    "mailboxId",
+    "subject",
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "receivedDate",
+    "sizeBytes",
+    "flags",
+    "encrypted",
+    "attachments",
+    "bodyText",
+    "bodyHtml",
+  ] satisfies IndexableAttribute[],
 };
 
 /**

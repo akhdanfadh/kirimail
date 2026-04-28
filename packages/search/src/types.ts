@@ -47,7 +47,30 @@ export interface MessageDoc {
   encrypted: boolean;
 
   attachments?: AttachmentMetadata[];
+  /**
+   * Decoded text/plain content; multi-leaf messages joined with '\n'.
+   * Undefined when the message had no text/plain part.
+   */
   bodyText?: string;
-  /** Raw HTML - sanitization happens at render time, not at index time. */
+  /**
+   * Decoded text/html content; joined on the same terms as {@link bodyText}.
+   * Stored unsanitized - sanitization happens at render time. Undefined
+   * when the message had no text/html part.
+   */
   bodyHtml?: string;
+  /**
+   * Search-only plain-text projection of {@link bodyHtml}. Defined only when
+   * the message was HTML-only ({@link bodyText} undefined and {@link bodyHtml}
+   * defined); otherwise absent, so {@link bodyText} and {@link bodyHtml} always
+   * match the message's actual MIME shape.
+   *
+   * Excluded from `displayedAttributes`, so search responses and `_formatted`
+   * snippets never expose it. CAVEAT: `displayedAttributes` does NOT apply to
+   * `getDocument(id)` - doc-fetch consumers see this field and must ignore it
+   * when rendering the message. Verified against Meilisearch v1.42.1; the
+   * server's own OpenAPI docstring contradicts the implementation here, so
+   * a future release that aligns them will fail integration tests noisily
+   * and `getMessageDoc` will need an explicit `fields` projection.
+   */
+  bodyTextDerived?: string;
 }

@@ -18,6 +18,8 @@ describe("ensureMeilisearchConfig", () => {
 
   it("applies the canonical attribute settings", async () => {
     const settings = await searchClient.index(TEST_INDEX_UID).getSettings();
+    // searchableAttributes order pinned: Meilisearch ranking is positional,
+    // so a reorder here is a real behavior change.
     expect(settings.searchableAttributes).toEqual([
       "subject",
       "from",
@@ -26,17 +28,45 @@ describe("ensureMeilisearchConfig", () => {
       "bcc",
       "attachments.filename",
       "bodyText",
+      "bodyTextDerived",
     ]);
-    expect(settings.filterableAttributes).toEqual([
-      "userId",
-      "emailAccountId",
-      "mailboxId",
-      "receivedDate",
-      "sizeBytes",
-      "flags",
-      "encrypted",
-    ]);
+    // filterableAttributes / displayedAttributes order doesn't affect runtime
+    // behavior, so set equality avoids failing on harmless reorders for
+    // readability. Pin that bodyTextDerived is excluded from displayedAttributes -
+    // the search-only contract that keeps the synthesized text out of search
+    // responses and `_formatted` snippets.
+    expect(new Set(settings.filterableAttributes)).toEqual(
+      new Set([
+        "userId",
+        "emailAccountId",
+        "mailboxId",
+        "receivedDate",
+        "sizeBytes",
+        "flags",
+        "encrypted",
+      ]),
+    );
     expect(settings.sortableAttributes).toEqual(["receivedDate", "sizeBytes"]);
+    expect(new Set(settings.displayedAttributes)).toEqual(
+      new Set([
+        "id",
+        "userId",
+        "emailAccountId",
+        "mailboxId",
+        "subject",
+        "from",
+        "to",
+        "cc",
+        "bcc",
+        "receivedDate",
+        "sizeBytes",
+        "flags",
+        "encrypted",
+        "attachments",
+        "bodyText",
+        "bodyHtml",
+      ]),
+    );
   });
 
   it("restores canonical settings if they drift between boots", async () => {

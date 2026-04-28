@@ -4,6 +4,7 @@ export type { MessageDoc } from "./types";
 
 export { createSearchClient, searchClient } from "./client";
 export { ensureMeilisearchConfig, MESSAGES_INDEX_UID } from "./config";
+export { htmlToPlainText } from "./html-to-text";
 export {
   deleteMessageDoc,
   deleteMessagesByEmailAccount,

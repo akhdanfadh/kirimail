@@ -154,6 +154,30 @@ describe("indexing primitives", () => {
     expect(afterHtml.bodyHtml).toBe("<p>html added</p>");
   });
 
+  it("bodyTextDerived is searchable but excluded from search-response hit bodies", async () => {
+    // Pins the displayedAttributes config: bodyTextDerived must score the doc when
+    // its content matches the query, but search hits and `_formatted` snippets
+    // must NOT expose the field. Catches regressions where bodyTextDerived sneaks
+    // into displayedAttributes (e.g., a temporary debug edit left in).
+    const id = "msg_derived_search";
+    const doc = makeSyncedMessageDoc({ id });
+    await upsertSyncedMessage(searchClient, doc, TEST_INDEX_UID);
+    await upsertMessageBody(
+      searchClient,
+      id,
+      { bodyHtml: "<p>opaque</p>", bodyTextDerived: "uniqueDerivedToken" },
+      TEST_INDEX_UID,
+    );
+
+    const result = await searchClient
+      .index<MessageDoc>(TEST_INDEX_UID)
+      .search("uniqueDerivedToken");
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]!.id).toBe(id);
+    expect((result.hits[0] as Partial<MessageDoc>).bodyTextDerived).toBeUndefined();
+    expect((result.hits[0] as Partial<MessageDoc>).bodyHtml).toBe("<p>opaque</p>");
+  });
+
   it("deleteMessageDoc returns 0 for an unknown id", async () => {
     const count = await deleteMessageDoc(searchClient, "never_indexed", TEST_INDEX_UID);
     expect(count).toBe(0);

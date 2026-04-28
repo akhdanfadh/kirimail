@@ -32,8 +32,8 @@ export type SyncedMessageDoc = Omit<MessageDoc, "bodyText" | "bodyHtml" | "attac
   attachments: NonNullable<MessageDoc["attachments"]>;
 };
 
-/** The body-field subset of {@link MessageDoc} written at the body-fetch stage. */
-export type BodyPartial = Pick<MessageDoc, "bodyText" | "bodyHtml">;
+/** Body-field subset of {@link MessageDoc} written at the body-fetch stage. */
+export type BodyPartial = Pick<MessageDoc, "bodyText" | "bodyHtml" | "bodyTextDerived">;
 
 /**
  * Sync-stage upsert: writes headers and attachments metadata in one Meilisearch

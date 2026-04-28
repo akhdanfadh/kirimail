@@ -106,6 +106,24 @@ name = "fbe2euser"
 secret = "testpass"
 email.0000 = "fbe2euser@localhost"
 
+[directory."memory".principals.0010]
+class = "individual"
+name = "fbderiveuser"
+secret = "testpass"
+email.0000 = "fbderiveuser@localhost"
+
+[directory."memory".principals.0011]
+class = "individual"
+name = "fbnoderiveuser"
+secret = "testpass"
+email.0000 = "fbnoderiveuser@localhost"
+
+[directory."memory".principals.0012]
+class = "individual"
+name = "fbimgonlyuser"
+secret = "testpass"
+email.0000 = "fbimgonlyuser@localhost"
+
 # SMTP submission config for integration tests. must-match-sender=false lets
 # the envelope sender diverge from the authenticated principal's stored email
 # (our helpers use the principal name as fromAddress, not the email). The

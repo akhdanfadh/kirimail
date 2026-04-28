@@ -15,7 +15,7 @@ import {
 import { insertDomainEvent } from "@kirimail/db";
 import * as schema from "@kirimail/db/schema";
 import { ImapConnectionCache, ImapNonRetriableError } from "@kirimail/mail";
-import { seedMessage, testCredentials } from "@kirimail/mail/testing";
+import { seedMessage, testCredentials, withImapConnection } from "@kirimail/mail/testing";
 import { getMessageDoc, upsertSyncedMessage } from "@kirimail/search";
 import { randomUUID } from "node:crypto";
 import { PgBoss } from "pg-boss";
@@ -453,9 +453,174 @@ describe("end-to-end sync -> dispatcher -> fetch-body via pg-boss", () => {
       expect(docWithBody).not.toBeNull();
       expect(docWithBody!.bodyText).toContain("End-to-end body text.");
       expect(docWithBody!.bodyHtml).toContain("<p>End-to-end <b>body</b> html.</p>");
+      // E2E's job is plumbing (sync -> dispatcher -> fetch-body all wired
+      // up correctly). Derivation semantics (no-derive when bodyText is
+      // real) live in the focused multipart test below.
     } finally {
       await boss.stop({ graceful: true, timeout: 5_000 });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Body derivation: HTML-only mail is the only path that writes the search-only
+// `bodyTextDerived` field. Direct-invocation tests (instead of the full sync
+// chain) target the worker's branches on known-shape messages.
+// ---------------------------------------------------------------------------
+
+describe("body derivation from HTML", () => {
+  let cache: ImapConnectionCache;
+  beforeEach(() => {
+    cache = new ImapConnectionCache();
+  });
+  afterEach(() => {
+    cache.closeAll();
+  });
+
+  /**
+   * Append a real message to the user's INBOX, resolve its UID, and create
+   * matching DB rows + Meilisearch header doc. Lets handleFetchBody run as
+   * if dispatcher had just enqueued it, without driving the full
+   * sync -> dispatcher -> fetch-body chain.
+   */
+  async function setupImapMessage(opts: {
+    emailUser: string;
+    seed: Parameters<typeof seedMessage>[1];
+  }) {
+    const creds = testCredentials(opts.emailUser);
+    await cleanImapState(creds);
+    await seedMessage(creds, opts.seed);
+
+    const uid = await withImapConnection(creds, async (client) => {
+      const lock = await client.getMailboxLock("INBOX", { readOnly: true });
+      try {
+        const uids = (await client.search({ all: true }, { uid: true })) || [];
+        if (uids.length === 0) throw new Error("no messages in INBOX after seed");
+        // SEARCH ALL is unordered per RFC 3501; max() picks the latest append.
+        return Math.max(...uids);
+      } finally {
+        lock.release();
+      }
+    });
+
+    const userId = await createTestUser(db);
+    const emailAccountId = await createEncryptedEmailAccount(db, userId, {
+      emailUser: opts.emailUser,
+    });
+    const mailboxId = randomUUID();
+    await db.insert(schema.mailboxes).values({
+      id: mailboxId,
+      emailAccountId,
+      path: "INBOX",
+      role: "inbox",
+    });
+    const messageId = randomUUID();
+    await db.insert(schema.messages).values({
+      id: messageId,
+      mailboxId,
+      providerUid: uid,
+      uidValidity: 1,
+      subject: opts.seed?.headers?.subject ?? null,
+      fromAddress: [{ name: "Sender", address: "sender@localhost" }],
+      toAddress: [{ name: "User", address: `${opts.emailUser}@localhost` }],
+      flags: [],
+      attachments: [],
+      encrypted: false,
+      internalDate: new Date("2026-01-01T00:00:00Z"),
+      sizeOctets: 1024,
+    });
+    await seedMeiliHeaderDoc({ messageId, mailboxId, emailAccountId, userId });
+    return { messageId, emailAccountId, mailboxId, userId };
+  }
+
+  it("HTML-only mail derives bodyTextDerived; bodyText stays undefined", async () => {
+    // Production scenario: mailing list / marketing / transactional mail with
+    // a single text/html MIME part and no text/plain alternative. Without
+    // derivation, the body content is unsearchable because bodyHtml is not
+    // in `searchableAttributes`.
+    const { messageId } = await setupImapMessage({
+      emailUser: "fbderiveuser",
+      seed: {
+        headers: { subject: "HTML only" },
+        html: "<p>Hello <b>world</b> from HTML-only mail.</p>",
+      },
+    });
+
+    await handleFetchBody({
+      db,
+      meili,
+      imapCache: cache,
+      messageId,
+      indexUid: TEST_INDEX_UID,
+    });
+
+    const doc = await getMessageDoc(meili, messageId, TEST_INDEX_UID);
+    expect(doc).not.toBeNull();
+    expect(doc!.bodyText).toBeUndefined();
+    expect(doc!.bodyHtml).toContain("<p>Hello <b>world</b> from HTML-only mail.</p>");
+    expect(doc!.bodyTextDerived).toBeDefined();
+    expect(doc!.bodyTextDerived).toContain("Hello");
+    expect(doc!.bodyTextDerived).toContain("world");
+    expect(doc!.bodyTextDerived).toContain("from HTML-only mail.");
+  });
+
+  it("multipart/alternative keeps original text/plain and does NOT derive", async () => {
+    // Pins the worker's guard: when bodyText is real, bodyTextDerived stays
+    // absent. The seed uses a token ("html") that only appears on the HTML
+    // side, so a regression that always derived would surface as
+    // bodyTextDerived defined and "html" leaking into bodyText's vocabulary.
+    const { messageId } = await setupImapMessage({
+      emailUser: "fbnoderiveuser",
+      seed: {
+        headers: { subject: "Multipart alternative" },
+        text: "Original plain text content.",
+        html: "<p>Different <b>html</b> content here.</p>",
+      },
+    });
+
+    await handleFetchBody({
+      db,
+      meili,
+      imapCache: cache,
+      messageId,
+      indexUid: TEST_INDEX_UID,
+    });
+
+    const doc = await getMessageDoc(meili, messageId, TEST_INDEX_UID);
+    expect(doc).not.toBeNull();
+    expect(doc!.bodyText).toContain("Original plain text content.");
+    expect(doc!.bodyText).not.toContain("html");
+    expect(doc!.bodyHtml).toContain("<p>Different <b>html</b> content here.</p>");
+    expect(doc!.bodyTextDerived).toBeUndefined();
+  });
+
+  it("image-only HTML preserves bodyHtml for rendering but yields no bodyTextDerived", async () => {
+    // The htmlToPlainText helper skips <img> entirely (default `image`
+    // formatter would emit the cid:/tracking-pixel URL - junk in the
+    // index). With no other text content, derivation returns undefined.
+    // bodyHtml still gets written so the UI can render the image; the
+    // message simply has no body tokens to score against in search.
+    const { messageId } = await setupImapMessage({
+      emailUser: "fbimgonlyuser",
+      seed: {
+        headers: { subject: "Image only" },
+        html: '<p><img src="cid:placeholder@example"></p>',
+      },
+    });
+
+    await handleFetchBody({
+      db,
+      meili,
+      imapCache: cache,
+      messageId,
+      indexUid: TEST_INDEX_UID,
+    });
+
+    const doc = await getMessageDoc(meili, messageId, TEST_INDEX_UID);
+    expect(doc).not.toBeNull();
+    expect(doc!.bodyText).toBeUndefined();
+    expect(doc!.bodyHtml).toContain('<img src="cid:placeholder@example">');
+    expect(doc!.bodyTextDerived).toBeUndefined();
   });
 });
 

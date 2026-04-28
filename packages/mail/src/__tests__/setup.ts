@@ -165,12 +165,17 @@ export interface SeedMessageHeaders {
 export interface SeedMessageOptions {
   /** RFC 5322 headers for the message. */
   headers?: SeedMessageHeaders;
-  /** Plain text body. Defaults to "Test message body." */
+  /**
+   * Plain text body. Defaults to "Test message body." for plain-only seeds.
+   * When `html` is set without `text`, the default is omitted - the seed
+   * produces a single-part `text/html` message instead of multipart, which
+   * is what real-world HTML-only mail (mailing lists, marketing) looks like.
+   */
   text?: string;
   /**
-   * HTML body. When set, the seeded message is built with MailComposer and
-   * produces a multipart structure (multipart/alternative when combined with
-   * `text`, or multipart/related when combined with cid-bearing attachments).
+   * HTML body. When set, the seeded message is built with MailComposer.
+   * Combined with `text`: multipart/alternative. With cid-bearing attachments:
+   * multipart/related. Alone (no `text`): single-part `text/html`.
    */
   html?: string;
   /**
@@ -202,6 +207,17 @@ async function buildRawMessage(options: SeedMessageOptions): Promise<Buffer> {
     // `date` here is the RFC 5322 Date: header inside the message body;
     // `options.internalDate` is the IMAP APPEND timestamp (server-receive
     // time), threaded separately through `client.append` in `seedMessage`.
+    //
+    // MailComposer only adds a text/plain alternative when `mail.text` is set.
+    // Leaving `text` undefined for html-only seeds yields a single-part
+    // `text/html` message; the "Test message body." default only fires for
+    // plain-only seeds (no html, no explicit text).
+    const text =
+      options.text !== undefined
+        ? options.text
+        : options.html !== undefined
+          ? undefined
+          : "Test message body.";
     const composer = new MailComposer({
       from: h.from ?? "sender@localhost",
       to: h.to ?? "user@localhost",
@@ -210,7 +226,7 @@ async function buildRawMessage(options: SeedMessageOptions): Promise<Buffer> {
       subject: h.subject,
       inReplyTo: h.inReplyTo,
       references: h.references,
-      text: options.text ?? "Test message body.",
+      text,
       html: options.html,
       attachments: options.attachments,
     });
