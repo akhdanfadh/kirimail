@@ -12,7 +12,7 @@ import type { ImapFlow } from "imapflow";
 //   1. Soft decline -> returned as `{ ok: false, reason: ... }`. Today only
 //      `uid-validity-stale` (caller's UIDs reference a previous mailbox
 //      generation; drop the command and let sync reconcile).
-//   2. Non-retriable -> `ImapPrimitiveNonRetriableError`. Deterministic; same
+//   2. Non-retriable -> `ImapNonRetriableError`. Deterministic; same
 //      input will fail the same way. Job queues should dead-letter.
 //   3. Retriable -> raw `Error` (network, auth expiry, server NO that
 //      imapflow re-raises). Queue retries normally.
@@ -28,10 +28,13 @@ import type { ImapFlow } from "imapflow";
 export type StaleUidValidity = { ok: false; reason: "uid-validity-stale" };
 
 /** Deterministic failure - safe to dead-letter without retry. */
-export class ImapPrimitiveNonRetriableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ImapPrimitiveNonRetriableError";
+export class ImapNonRetriableError extends Error {
+  // Accepts a `cause` so callers that have an underlying imapflow error
+  // (responseStatus, executedCommand, code, stack) can preserve it rather
+  // than flatten it into the synthesized message.
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "ImapNonRetriableError";
   }
 }
 
@@ -40,7 +43,7 @@ export class ImapPrimitiveNonRetriableError extends Error {
  * dropped between handover and the APPEND command (detected via
  * `!client.usable` on a falsy `client.append` return).
  *
- * Distinct from {@link ImapPrimitiveNonRetriableError} so callers can
+ * Distinct from {@link ImapNonRetriableError} so callers can
  * discriminate recoverable transient disconnects from genuine preconditions
  * without string-sniffing. Recovery (re-APPEND + Message-ID dedup) is the
  * caller's responsibility.
@@ -66,7 +69,7 @@ export class ImapAppendConnectionLostError extends Error {
 function uidValidityMatches(client: ImapFlow, expected: number | undefined): boolean {
   if (expected === undefined) return true;
   if (!client.mailbox) {
-    throw new ImapPrimitiveNonRetriableError(
+    throw new ImapNonRetriableError(
       "IMAP precondition violated: mailbox lock held but client.mailbox is unset",
     );
   }
@@ -124,7 +127,7 @@ export async function storeFlags(
     if (!ok) {
       // imapflow swallowed the cause (see module header). Likely empty UIDs,
       // all flags filtered by mailbox permanentFlags, or server NO.
-      throw new ImapPrimitiveNonRetriableError(
+      throw new ImapNonRetriableError(
         `IMAP STORE returned no result (mailbox: ${JSON.stringify(input.mailbox)}, ` +
           `operation: ${input.operation}, flags: ${JSON.stringify(input.flags)})`,
       );
@@ -176,7 +179,7 @@ export async function moveMessages(
     if (!result) {
       // imapflow swallowed the cause (see module header). Likely empty UIDs
       // or non-existent destination.
-      throw new ImapPrimitiveNonRetriableError(
+      throw new ImapNonRetriableError(
         `IMAP MOVE returned no result (${JSON.stringify(input.mailbox)} -> ` +
           `${JSON.stringify(input.destination)})`,
       );
@@ -227,7 +230,7 @@ export async function expungeMessages(
     if (!ok) {
       // imapflow swallowed the cause (see module header). Likely empty UIDs
       // or read-only mailbox.
-      throw new ImapPrimitiveNonRetriableError(
+      throw new ImapNonRetriableError(
         `IMAP EXPUNGE returned no result (mailbox: ${JSON.stringify(input.mailbox)})`,
       );
     }
@@ -289,7 +292,7 @@ export async function appendMessage(
     if (!client.usable) {
       throw new ImapAppendConnectionLostError(input.mailbox);
     }
-    throw new ImapPrimitiveNonRetriableError(
+    throw new ImapNonRetriableError(
       `IMAP APPEND returned no result on a usable connection ` +
         `(mailbox: ${JSON.stringify(input.mailbox)})`,
     );

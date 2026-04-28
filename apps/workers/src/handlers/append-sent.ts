@@ -1,3 +1,4 @@
+import type { AppendToMailboxResult } from "@kirimail/mail";
 import type { Job, PgBoss } from "pg-boss";
 
 import {
@@ -7,7 +8,7 @@ import {
   getEmailAccountById,
   getOutboundMessageById,
 } from "@kirimail/db";
-import { appendToSentFolder, ImapPrimitiveNonRetriableError } from "@kirimail/mail";
+import { appendToSentFolder, asNonRetriableImapError, ImapNonRetriableError } from "@kirimail/mail";
 
 import { imapCache } from "../caches";
 import { resolveImapCredentials } from "../credentials";
@@ -48,24 +49,27 @@ export async function registerAppendSent(boss: PgBoss): Promise<void> {
       const job = jobs[0]!;
       try {
         await handleAppendSent(job.data);
-      } catch (error) {
-        // Deterministic IMAP failures won't change on retry; swallow so pg-boss
-        // marks the job complete and the reaper cleans the row on its next
-        // cycle. Mirrors the imap-command handler's contract.
+      } catch (err) {
+        // Deterministic IMAP failures (rotated credentials, missing Sent mailbox,
+        // server precondition) won't change on retry; swallow so pg-boss marks the
+        // job complete and the reaper cleans the row on its next cycle.
+        //
+        // NOTE: This is NOT pg-boss dead-lettering - returning here marks the job successful,
+        // so it leaves no DLQ entry and no failure metric. If a real DLQ is wired up later,
+        // throw a typed error pg-boss can route there instead.
         //
         // NOTE: This path is silent to the account owner - the Sent-folder
         // copy is simply missing. A future Outbox UI should stamp a dedicated
         // error column or terminal `append_failed` status here.
-        if (error instanceof ImapPrimitiveNonRetriableError) {
+        if (err instanceof ImapNonRetriableError) {
           console.error(
             `[${APPEND_SENT_QUEUE}] row ${job.data.outboundMessageId} discarded (deterministic IMAP failure, non-retriable):`,
-            error.message,
+            err,
           );
           return;
         }
-        // Single-line context before pg-boss logs the generic failure itself.
-        console.error(`[${APPEND_SENT_QUEUE}] row ${job.data.outboundMessageId} failed:`, error);
-        throw error;
+        console.error(`[${APPEND_SENT_QUEUE}] row ${job.data.outboundMessageId} failed:`, err);
+        throw err;
       }
     },
   );
@@ -121,14 +125,28 @@ async function handleAppendSent(data: AppendSentJobData): Promise<void> {
   }
 
   const creds = resolveImapCredentials(account);
-  const result = await appendToSentFolder({
-    imapCache,
-    emailAccountId: row.emailAccountId,
-    imapCreds: creds,
-    raw: row.rawMime,
-    mailboxPath,
-    messageId: row.messageId,
-  });
+  let result: AppendToMailboxResult;
+  try {
+    result = await appendToSentFolder({
+      imapCache,
+      emailAccountId: row.emailAccountId,
+      imapCreds: creds,
+      raw: row.rawMime,
+      mailboxPath,
+      messageId: row.messageId,
+    });
+  } catch (err) {
+    // Wrap spans both connect-phase (auth from getOrConnect, before appendToSentFolder runs)
+    // and command-phase (NO/BAD from STATUS/SELECT/APPEND inside the helper) so both
+    // deterministic shapes route to the typed non-retriable. Non-deterministic errors
+    // fall through via `?? err` and bubble for retry.
+    throw (
+      asNonRetriableImapError(
+        err,
+        `IMAP append-sent failed deterministically (account: ${row.emailAccountId}, row: ${outboundMessageId}, mailbox: ${JSON.stringify(mailboxPath)})`,
+      ) ?? err
+    );
+  }
 
   await deleteOutboundMessage(db, outboundMessageId);
 

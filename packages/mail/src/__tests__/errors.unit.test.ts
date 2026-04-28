@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { classifySmtpError } from "../errors";
+import { ImapNonRetriableError } from "../commands";
+import { asNonRetriableImapError, classifySmtpError } from "../errors";
 
 /**
- * Helper to build realistic nodemailer error objects. In production,
- * nodemailer's _formatError creates Error instances with .code,
- * .responseCode, .response, and .command set as properties.
+ * Build a realistic nodemailer error: nodemailer's _formatError sets
+ * .code, .responseCode, .response, and .command on Error instances.
  */
 function smtpError(
   message: string,
@@ -15,9 +15,7 @@ function smtpError(
 }
 
 describe("classifySmtpError", () => {
-  // -------------------------------------------------------------------------
-  // Real production error scenarios - representative nodemailer errors
-  // -------------------------------------------------------------------------
+  // Real production error scenarios - representative nodemailer errors.
 
   it("auth failure: server rejects credentials (EAUTH + 535)", () => {
     const err = smtpError("Invalid login: 535 5.7.8 Authentication credentials invalid", {
@@ -68,9 +66,7 @@ describe("classifySmtpError", () => {
     expect(classifySmtpError(err).category).toBe("transient");
   });
 
-  // -------------------------------------------------------------------------
-  // Classification ordering - precedence invariants that prevent misrouting
-  // -------------------------------------------------------------------------
+  // Classification ordering - precedence invariants that prevent misrouting.
 
   it("550 is recipient, not protocol - prevents infinite retry on typo'd address", () => {
     const err = smtpError("550 User unknown", { responseCode: 550, command: "RCPT TO" });
@@ -88,14 +84,10 @@ describe("classifySmtpError", () => {
     expect(classifySmtpError(err).category).toBe("transient");
   });
 
-  // -------------------------------------------------------------------------
-  // Partial rejection: per-recipient errors from rejectedErrors[]
-  //
-  // When some RCPT TO succeed and some fail, nodemailer returns success with
-  // info.rejectedErrors containing per-recipient error objects. The worker
-  // handler may classify these individually to decide whether to notify the
-  // sender about specific failed addresses.
-  // -------------------------------------------------------------------------
+  // Partial rejection: when some RCPT TO succeed and some fail, nodemailer
+  // returns success with info.rejectedErrors holding per-recipient error
+  // objects. Worker handlers classify these individually to decide whether
+  // to notify the sender about specific failed addresses.
 
   it("per-recipient rejection from rejectedErrors classifies as recipient", () => {
     // Shape from nodemailer's _setEnvelope when individual RCPT TO fails
@@ -106,5 +98,174 @@ describe("classifySmtpError", () => {
       recipient: "bad@example.com",
     });
     expect(classifySmtpError(perRecipientErr).category).toBe("recipient");
+  });
+});
+
+/**
+ * Build a realistic imapflow error: imapflow attaches `responseStatus` and
+ * `executedCommand` (plus `serverResponseCode` after enhanceCommandError) on
+ * NO/BAD; `authenticationFailed` on LOGIN/AUTHENTICATE rejection.
+ * Connection-level errors (ECONNRESET, ETIMEOUT) carry only `code`.
+ */
+function imapError(
+  message: string,
+  props?: {
+    authenticationFailed?: boolean;
+    responseStatus?: string;
+    executedCommand?: string;
+    serverResponseCode?: string;
+    code?: string;
+  },
+) {
+  return Object.assign(new Error(message), props);
+}
+
+describe("asNonRetriableImapError", () => {
+  // -- Deterministic shapes - wrap and return so the caller discards.
+
+  it("auth failure: imapflow flags authenticationFailed on LOGIN", () => {
+    // Mirrors imapflow's lib/commands/login.js:38. The auth check reads
+    // only this flag - regression-guarded if it later starts requiring
+    // responseStatus alongside.
+    const err = imapError("Authentication failed", { authenticationFailed: true });
+    expect(asNonRetriableImapError(err, "ctx")).toBeInstanceOf(ImapNonRetriableError);
+  });
+
+  it("mailbox not found: NO on SELECT", () => {
+    const err = imapError("Command failed", {
+      responseStatus: "NO",
+      executedCommand: 'tag2 SELECT "Mailbox/Does/Not/Exist"',
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeInstanceOf(ImapNonRetriableError);
+  });
+
+  it("mailbox not found: NO on EXAMINE (read-only SELECT variant)", () => {
+    // body-fetch opens the mailbox with `readOnly: true`, which sends
+    // EXAMINE rather than SELECT.
+    const err = imapError("Command failed", {
+      responseStatus: "NO",
+      executedCommand: 'tag3 EXAMINE "Mailbox/Does/Not/Exist"',
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeInstanceOf(ImapNonRetriableError);
+  });
+
+  it("server protocol error: BAD on UID FETCH", () => {
+    // download(uid, partPath) issues UID FETCH BODY[partN]; a BAD reply is
+    // a server protocol error - retries can't change the response.
+    const err = imapError("Command failed", {
+      responseStatus: "BAD",
+      executedCommand: "tag4 UID FETCH 5 (BODY.PEEK[1])",
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeInstanceOf(ImapNonRetriableError);
+  });
+
+  it("mailbox not found: NO on STATUS (probe-then-lock path)", () => {
+    // mailbox-append.ts:164 issues `client.status(mailbox, ...)` before lock.
+    // For a vanished mailbox, STATUS returns NO and we must discard.
+    const err = imapError("Command failed", {
+      responseStatus: "NO",
+      executedCommand: 'tag9 STATUS "Sent" (MESSAGES)',
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeInstanceOf(ImapNonRetriableError);
+  });
+
+  it("mailbox not found: NO with [NONEXISTENT] on COPY (verb-agnostic path)", () => {
+    // RFC 5530 [NONEXISTENT] explicitly says the mailbox does not exist.
+    // Verb-agnostic so it covers COPY/MOVE/APPEND, which aren't in the verb
+    // list - servers that emit the bracket code get the discard regardless.
+    const err = imapError("Command failed", {
+      responseStatus: "NO",
+      executedCommand: 'tag10 UID COPY 1:5 "Archive"',
+      serverResponseCode: "NONEXISTENT",
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeInstanceOf(ImapNonRetriableError);
+  });
+
+  it("mailbox not found: NO with [TRYCREATE] on APPEND (destination gone)", () => {
+    // RFC 3501 [TRYCREATE] on APPEND/COPY indicates the destination doesn't
+    // exist - same outcome as NONEXISTENT; discard.
+    const err = imapError("Command failed", {
+      responseStatus: "NO",
+      executedCommand: 'tag11 APPEND "Sent" (\\Seen)',
+      serverResponseCode: "TRYCREATE",
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeInstanceOf(ImapNonRetriableError);
+  });
+
+  // -- Non-deterministic shapes - return undefined so the caller bubbles for retry.
+
+  it("NO on FETCH falls through: imapflow swallows the canonical 'no longer exist' NO", () => {
+    // imapflow's lib/imap-flow.js:752 turns NO + 'Some of the requested
+    // messages no longer exist' into a successful partial response, so any
+    // NO that does surface on FETCH is a server quirk we shouldn't auto-discard.
+    const err = imapError("Command failed", {
+      responseStatus: "NO",
+      executedCommand: "tag5 UID FETCH 5 (BODY.PEEK[1])",
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeUndefined();
+  });
+
+  it("BAD on SELECT falls through: rare in practice, treat as transient", () => {
+    const err = imapError("Command failed", {
+      responseStatus: "BAD",
+      executedCommand: 'tag6 SELECT "INBOX"',
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeUndefined();
+  });
+
+  it("[INUSE] on SELECT falls through: another session holds an exclusive lock", () => {
+    // RFC 5530 [INUSE] is genuinely transient - the holding session may
+    // release before the next retry.
+    const err = imapError("Command failed", {
+      responseStatus: "NO",
+      executedCommand: 'tag7 SELECT "INBOX"',
+      serverResponseCode: "INUSE",
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeUndefined();
+  });
+
+  it("BAD on SELECT 'FETCH' mailbox does not misclassify as BAD-on-FETCH", () => {
+    // Defends against a substring-match regression: a BAD on SELECT for a
+    // mailbox literally named "FETCH/Bot" must fall through (BAD on SELECT
+    // is out of scope), not get classified as "BAD on FETCH".
+    const err = imapError("Command failed", {
+      responseStatus: "BAD",
+      executedCommand: 'tag8 SELECT "Archive/FETCH-Bot"',
+    });
+    expect(asNonRetriableImapError(err, "ctx")).toBeUndefined();
+  });
+
+  it("connection-level error: no responseStatus, must retry", () => {
+    // Socket drops, server BYE, ETIMEOUT, NoConnection all share one
+    // fall-through path (no responseStatus, no executedCommand) - one
+    // representative case suffices.
+    const err = imapError("read ECONNRESET", { code: "ECONNRESET" });
+    expect(asNonRetriableImapError(err, "ctx")).toBeUndefined();
+  });
+
+  // -- Defensive: malformed / unexpected error values must not throw or wrap.
+
+  it("null defaults to undefined (graceful close, no error to classify)", () => {
+    // imapflow's close event always fires with null; classifyImapError handles
+    // this same shape on the connection-lifecycle side.
+    expect(asNonRetriableImapError(null, "ctx")).toBeUndefined();
+  });
+
+  it("plain Error with no imapflow fields defaults to undefined", () => {
+    // Pins fall-through for any unrecognized object error - the caller's
+    // `instanceof ImapNonRetriableError` check handles the typed-error path
+    // separately.
+    expect(asNonRetriableImapError(new Error("unexpected"), "ctx")).toBeUndefined();
+  });
+
+  // -- Wrap contract: cause preservation + context prefixing.
+
+  it("preserves the original on cause and prepends contextMessage", () => {
+    const original = imapError("Authentication failed", { authenticationFailed: true });
+    const wrapped = asNonRetriableImapError(original, 'IMAP fetch failed (mailbox: "INBOX")');
+    expect(wrapped).toBeInstanceOf(ImapNonRetriableError);
+    expect(wrapped!.cause).toBe(original);
+    // Context message is prepended; original message is appended.
+    expect(wrapped!.message).toBe('IMAP fetch failed (mailbox: "INBOX"): Authentication failed');
   });
 });

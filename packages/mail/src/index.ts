@@ -50,7 +50,7 @@ export {
   appendMessage,
   expungeMessages,
   ImapAppendConnectionLostError,
-  ImapPrimitiveNonRetriableError,
+  ImapNonRetriableError,
   moveMessages,
   storeFlags,
 } from "./commands";
@@ -64,7 +64,7 @@ export {
 } from "./crypto";
 export { discoverMailboxes, shouldAppendToSent } from "./discovery";
 export { mailEnv } from "./env";
-export { classifyImapError, classifySmtpError } from "./errors";
+export { asNonRetriableImapError, classifyImapError, classifySmtpError } from "./errors";
 export { IdleManager } from "./idle";
 export { appendToMailbox, appendToSentFolder } from "./mailbox-append";
 export { ReconnectionManager } from "./reconnection";

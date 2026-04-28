@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ImapConnectionCache, ImapCredentials } from "../connection";
 
-import { ImapPrimitiveNonRetriableError } from "../commands";
+import { ImapNonRetriableError } from "../commands";
 import {
   type AppendToMailboxInput,
   type AppendToMailboxResult,
@@ -248,7 +248,7 @@ describe("appendToMailbox", () => {
     expect(append).toHaveBeenCalledOnce();
   });
 
-  it("throws ImapPrimitiveNonRetriableError on malformed messageId (dead-letters immediately)", async () => {
+  it("throws ImapNonRetriableError on malformed messageId (dead-letters immediately)", async () => {
     // assertMessageId throws plain Error, which the queue treats as retriable.
     // appendToMailbox must wrap it so the job dead-letters without burning retries.
     const { client } = makeClient({ existingCount: 0 });
@@ -256,12 +256,12 @@ describe("appendToMailbox", () => {
 
     await expect(
       appendToMailbox(mailboxInput(cache, { messageId: "bare@example.com" })),
-    ).rejects.toBeInstanceOf(ImapPrimitiveNonRetriableError);
+    ).rejects.toBeInstanceOf(ImapNonRetriableError);
 
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("throws ImapPrimitiveNonRetriableError when SEARCH returns false (fail-closed - avoid blind APPEND)", async () => {
+  it("throws ImapNonRetriableError when SEARCH returns false (fail-closed - avoid blind APPEND)", async () => {
     // imapflow's search() returns false (not undefined) on server-side failure:
     // Promise<number[] | false>. This is a non-retriable condition - retrying
     // the same job won't fix a broken SEARCH response.
@@ -269,18 +269,18 @@ describe("appendToMailbox", () => {
     const { cache } = makeCache({ client });
 
     await expect(appendToMailbox(mailboxInput(cache))).rejects.toBeInstanceOf(
-      ImapPrimitiveNonRetriableError,
+      ImapNonRetriableError,
     );
   });
 
-  it("throws ImapPrimitiveNonRetriableError when the mailbox lock leaves client.mailbox unset (fail-closed)", async () => {
+  it("throws ImapNonRetriableError when the mailbox lock leaves client.mailbox unset (fail-closed)", async () => {
     // existingCount must be non-zero so STATUS doesn't short-circuit before the lock.
     const { client } = makeClient({ existingCount: 1, candidateUids: [] });
     (client as unknown as { mailbox: undefined }).mailbox = undefined;
     const { cache } = makeCache({ client });
 
     await expect(appendToMailbox(mailboxInput(cache))).rejects.toBeInstanceOf(
-      ImapPrimitiveNonRetriableError,
+      ImapNonRetriableError,
     );
   });
 

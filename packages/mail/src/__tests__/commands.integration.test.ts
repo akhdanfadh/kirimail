@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendMessage,
   expungeMessages,
-  ImapPrimitiveNonRetriableError,
+  ImapNonRetriableError,
   moveMessages,
   storeFlags,
 } from "../commands";
@@ -278,7 +278,7 @@ describe("moveMessages", () => {
       withImapConnection(creds(), (client) =>
         moveMessages(client, { mailbox: source, destination: "NoSuchMailbox", uids: [uid!] }),
       ),
-    ).rejects.toThrow(ImapPrimitiveNonRetriableError);
+    ).rejects.toThrow(ImapNonRetriableError);
 
     // Source message still exists (server rejected the move)
     const remaining = await getUids(source);
@@ -496,6 +496,6 @@ describe("appendMessage", () => {
       appendMessage(client, { mailbox: "DoesNotExist", raw }),
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
-    expect(err).not.toBeInstanceOf(ImapPrimitiveNonRetriableError);
+    expect(err).not.toBeInstanceOf(ImapNonRetriableError);
   });
 });

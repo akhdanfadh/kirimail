@@ -271,7 +271,7 @@ describe("append-sent via pg-boss", () => {
 
   it("leaves a sent row untouched when the stored Message-ID is malformed", async () => {
     await seedSentMailbox(db, accountId, creds());
-    // Message-ID without angle brackets triggers ImapPrimitiveNonRetriableError
+    // Message-ID without angle brackets triggers ImapNonRetriableError
     // inside appendToMailbox's assertMessageId guard. Use a raw MIME whose
     // header matches so insertOutboundMessage doesn't choke on its own validation.
     const malformedId = `malformed-${randomUUID()}@test.local`;
@@ -296,7 +296,7 @@ describe("append-sent via pg-boss", () => {
       const spy = boss.getSpy("append-sent");
 
       await boss.send("append-sent", { outboundMessageId: rowId });
-      // Handler catches ImapPrimitiveNonRetriableError and returns, so pg-boss
+      // Handler catches ImapNonRetriableError and returns, so pg-boss
       // marks the job completed rather than burning retries. The row stays in
       // `sent`; the reaper cleans it on the 6h cycle.
       await spy.waitForJob(() => true, "completed");

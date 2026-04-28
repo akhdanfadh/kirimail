@@ -14,7 +14,7 @@ import {
 } from "#test/helpers";
 import { insertDomainEvent } from "@kirimail/db";
 import * as schema from "@kirimail/db/schema";
-import { ImapConnectionCache } from "@kirimail/mail";
+import { ImapConnectionCache, ImapNonRetriableError } from "@kirimail/mail";
 import { seedMessage, testCredentials } from "@kirimail/mail/testing";
 import { getMessageDoc, upsertSyncedMessage } from "@kirimail/search";
 import { randomUUID } from "node:crypto";
@@ -242,6 +242,35 @@ describe("handleFetchBody (early-return paths)", () => {
     expect(doc!.bodyHtml).toBe("<p>preserved</p>");
   });
 
+  it("throws ImapNonRetriableError when the server mailbox doesn't exist", async () => {
+    // Pin the deterministic-discard contract for the worker: when SELECT/EXAMINE
+    // returns NO (mailbox renamed or deleted server-side), fetchMessageBody must
+    // surface that as a typed non-retriable so the worker discards instead of
+    // burning pg-boss's retry budget. We seed real Stalwart credentials and a
+    // Meili header doc with no body fields so we can't short-circuit on either
+    // pre-IMAP guard - the worker actually opens an IMAP connection and calls
+    // EXAMINE on a path that doesn't exist on the server.
+    const { messageId, emailAccountId, mailboxId, userId } = await seedMessageRow({
+      mailboxPath: "Mailbox/Does/Not/Exist",
+      emailUser: "fbuser",
+    });
+    await seedMeiliHeaderDoc({ messageId, emailAccountId, mailboxId, userId });
+
+    const promise = handleFetchBody({
+      db,
+      meili,
+      imapCache: cache,
+      messageId,
+      indexUid: TEST_INDEX_UID,
+    });
+    await expect(promise).rejects.toBeInstanceOf(ImapNonRetriableError);
+    // Pin that the original imapflow error survives on `cause` - postmortems
+    // need responseStatus/executedCommand to identify the failing operation.
+    await expect(promise).rejects.toMatchObject({
+      cause: expect.objectContaining({ responseStatus: "NO" }),
+    });
+  });
+
   it("skips when the row is flagged encrypted (defense-in-depth)", async () => {
     // The dispatcher should skip enqueueing in the first place, but a future composer
     // (e.g., reindex) might call the function directly. Pre-seed the Meili doc with
@@ -424,6 +453,63 @@ describe("end-to-end sync -> dispatcher -> fetch-body via pg-boss", () => {
       expect(docWithBody).not.toBeNull();
       expect(docWithBody!.bodyText).toContain("End-to-end body text.");
       expect(docWithBody!.bodyHtml).toContain("<p>End-to-end <b>body</b> html.</p>");
+    } finally {
+      await boss.stop({ graceful: true, timeout: 5_000 });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Worker discard via pg-boss: registered handler must mark the job complete
+// (not failed) when fetchMessageBody surfaces a deterministic IMAP failure.
+// ---------------------------------------------------------------------------
+
+describe("registered worker discards deterministic IMAP failures", () => {
+  it("auth failure (rotated credentials) ends the job in completed, not failed", async () => {
+    // Pins the catch-arm + asNonRetriableImapError wrap for fetch-body: a
+    // rotated-credentials job must end in `completed`, not retry to exhaustion.
+    // If the wrap or the `instanceof` arm regress, waitForJob times out at 60s.
+    const userId = await createTestUser(db);
+    const accountId = await createEncryptedEmailAccount(db, userId, {
+      emailUser: "fbuser",
+      emailPass: "wrong-password",
+    });
+    const mailboxId = randomUUID();
+    await db.insert(schema.mailboxes).values({
+      id: mailboxId,
+      emailAccountId: accountId,
+      path: "INBOX",
+      role: "inbox",
+    });
+
+    const messageId = randomUUID();
+    await db.insert(schema.messages).values({
+      id: messageId,
+      mailboxId,
+      providerUid: 1,
+      uidValidity: 1,
+      subject: "Auth failure discard test",
+      fromAddress: [{ name: "Alice", address: "alice@example.com" }],
+      toAddress: [{ name: "Bob", address: "bob@example.com" }],
+      flags: ["\\Seen"],
+      attachments: [],
+      encrypted: false,
+      internalDate: new Date("2026-01-01T00:00:00Z"),
+      sizeOctets: 1234,
+    });
+    // Seed Meili header doc without body fields so the worker's pre-IMAP
+    // guard doesn't short-circuit before the auth attempt.
+    await seedMeiliHeaderDoc({ messageId, mailboxId, emailAccountId: accountId, userId });
+
+    const boss = createTestBoss();
+    await boss.start();
+    try {
+      await registerFetchBody(boss, { indexUid: TEST_INDEX_UID });
+
+      const fetchSpy = boss.getSpy<{ messageId: string }>(FETCH_BODY_QUEUE);
+      await boss.send(FETCH_BODY_QUEUE, { messageId });
+
+      await fetchSpy.waitForJob((data) => data.messageId === messageId, "completed");
     } finally {
       await boss.stop({ graceful: true, timeout: 5_000 });
     }

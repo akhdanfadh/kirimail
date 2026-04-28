@@ -1,10 +1,11 @@
+import type { FetchMessageBodyResult, ImapConnectionCache } from "@kirimail/mail";
 import type { Meilisearch } from "@kirimail/search";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 import type { Job, PgBoss } from "pg-boss";
 
 import { db, getEmailAccountById, getMessageWithOwnership } from "@kirimail/db";
 import * as schema from "@kirimail/db/schema";
-import { fetchMessageBody, type ImapConnectionCache } from "@kirimail/mail";
+import { asNonRetriableImapError, fetchMessageBody, ImapNonRetriableError } from "@kirimail/mail";
 import {
   getMessageDoc,
   MESSAGES_INDEX_UID,
@@ -64,13 +65,24 @@ export async function registerFetchBody(
           indexUid: opts.indexUid ?? MESSAGES_INDEX_UID,
         });
       } catch (err) {
-        // TODO: Classify deterministic IMAP failures (auth rotated, mailbox renamed/deleted,
-        // BAD on FETCH) as non-retriable, mirroring the ImapPrimitiveNonRetriableError
-        // pattern in commands.ts + imap-command.ts. fetchMessageBody currently surfaces raw
-        // imapflow errors, so deterministic failures burn 3 retries x ~30/60/120s backoff
-        // (~3.5 min) per job - on a rotated-credential account with 10K messages, that is
-        // ~580 hours of wasted retry budget AND blocks healthy accounts from the same
-        // localConcurrency slot. Build before real users hit rotated creds.
+        // Deterministic IMAP failures (rotated credentials, mailbox renamed or
+        // deleted server-side, BAD on FETCH) won't change on retry - mark the
+        // job complete so pg-boss doesn't burn 3x retry slots on a poisoned job.
+        //
+        // NOTE: This is NOT pg-boss dead-lettering - returning here marks the job successful,
+        // so it leaves no DLQ entry and no failure metric. If a real DLQ is wired up later,
+        // throw a typed error pg-boss can route there instead.
+        //
+        // NOTE: The discard is permanent for this message's body fields until a
+        // body-only reindex composer ships. Revisit when telemetry lands (emit
+        // `fetch_body_discarded_total`).
+        if (err instanceof ImapNonRetriableError) {
+          console.error(
+            `[${FETCH_BODY_QUEUE}] message ${job.data.messageId} discarded (deterministic IMAP failure, non-retriable):`,
+            err,
+          );
+          return;
+        }
         console.error(`[${FETCH_BODY_QUEUE}] message ${job.data.messageId} failed:`, err);
         throw err;
       }
@@ -165,14 +177,28 @@ export async function handleFetchBody(deps: FetchBodyDeps): Promise<void> {
   }
 
   const creds = resolveImapCredentials(account);
-  const result = await imapCache.execute(row.emailAccountId, creds, (client) =>
-    fetchMessageBody(client, {
-      mailbox: row.mailboxPath,
-      uid: row.message.providerUid,
-      maxBytesPerPart: MAX_BYTES_TEXT_PART,
-      maxBytesTotal: MAX_BYTES_TEXT_TOTAL,
-    }),
-  );
+  let result: FetchMessageBodyResult;
+  try {
+    result = await imapCache.execute(row.emailAccountId, creds, (client) =>
+      fetchMessageBody(client, {
+        mailbox: row.mailboxPath,
+        uid: row.message.providerUid,
+        maxBytesPerPart: MAX_BYTES_TEXT_PART,
+        maxBytesTotal: MAX_BYTES_TEXT_TOTAL,
+      }),
+    );
+  } catch (err) {
+    // Wrap spans both connect-phase (auth from getOrConnect, before fetchMessageBody runs)
+    // and command-phase (NO/BAD from inside the primitive) so both deterministic shapes
+    // route to the typed non-retriable. Non-deterministic errors fall through via `?? err`
+    // and bubble for retry.
+    throw (
+      asNonRetriableImapError(
+        err,
+        `IMAP body fetch failed deterministically (mailbox: ${JSON.stringify(row.mailboxPath)}, uid: ${row.message.providerUid})`,
+      ) ?? err
+    );
+  }
   if (result.uidNotFound) {
     // UID is no longer on the server (message moved/expunged between sync and now). The next
     // sync's reconciliation will emit `message.deleted` and the Meilisearch doc cleanup follows.

@@ -54,6 +54,11 @@ export interface FetchMessageBodyResult {
  * Returns body fields as `undefined` (not empty string) when no eligible part was
  * extracted, so callers using partial-merge upserts don't write empty strings.
  *
+ * Throws raw imapflow errors. Callers that need deterministic-failure routing wrap
+ * the entire connect+execute call with `asNonRetriableImapError` (in errors.ts),
+ * which also catches connect-time auth failures that surface from the connection
+ * cache before this function runs.
+ *
  * @see https://imapflow.com/docs/guides/fetching-messages
  * @see https://imapflow.com/docs/api/imapflow-client/#downloadrange-part-options
  */
@@ -80,7 +85,7 @@ export async function fetchMessageBody(
     const plainChunks: string[] = [];
     const htmlChunks: string[] = [];
     for (const part of textParts) {
-      // Prevents a multipart with many text leaves exploring worker RAM.
+      // Prevents a multipart with many text leaves exploding worker RAM.
       if (bytesRemaining <= 0) break;
 
       const partCap = Math.min(maxBytesPerPart, bytesRemaining);
@@ -89,7 +94,7 @@ export async function fetchMessageBody(
         maxBytes: partCap,
       });
       // download() returns content-less when the message was expunged server-side between
-      // our outer fetchOne anda this per-part fetch. The lock serialized our own operations
+      // our outer fetchOne and this per-part fetch. The lock serialized our own operations
       // but doesn't stop other IMAP clients on the same account from expunging concurrently.
       if (!content) continue;
 

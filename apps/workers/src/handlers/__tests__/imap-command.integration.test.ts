@@ -225,4 +225,43 @@ describe("imap-command via pg-boss", () => {
       await boss.stop({ graceful: true, timeout: 5_000 });
     }
   });
+
+  it("auth failure (rotated credentials) ends the job in completed, not failed", async () => {
+    // Pins the catch-arm + asNonRetriableImapError wrap: a rotated-credentials
+    // job must end in `completed`, not retry to exhaustion. If the wrap or the
+    // `instanceof` arm regress, waitForJob times out at 60s instead.
+    //
+    // Stalwart's "imapcommanduser" principal exists; a wrong password produces
+    // the rotated-credentials shape (LOGIN rejected with authenticationFailed=true).
+    const rotatedAccountId = await createEncryptedEmailAccount(db, userId, {
+      emailUser: "imapcommanduser",
+      emailPass: "wrong-password",
+    });
+
+    const boss = createTestBoss();
+    await boss.start();
+
+    try {
+      await registerImapCommand(boss);
+      const spy = boss.getSpy("imap-command");
+
+      await boss.send("imap-command", {
+        type: "store-flags",
+        emailAccountId: rotatedAccountId,
+        mailbox: "INBOX",
+        uids: [1],
+        flags: ["\\Seen"],
+        operation: "add",
+      });
+
+      // Filter on the rotated account id so a regression that emits a
+      // second job for the global accountId can't satisfy the wait.
+      await spy.waitForJob(
+        (data) => (data as { emailAccountId: string }).emailAccountId === rotatedAccountId,
+        "completed",
+      );
+    } finally {
+      await boss.stop({ graceful: true, timeout: 5_000 });
+    }
+  });
 });

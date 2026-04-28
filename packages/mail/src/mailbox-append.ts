@@ -2,7 +2,7 @@ import type { ImapFlow } from "imapflow";
 
 import type { ImapConnectionCache, ImapCredentials } from "./connection";
 
-import { appendMessage, ImapPrimitiveNonRetriableError } from "./commands";
+import { appendMessage, ImapNonRetriableError } from "./commands";
 import { assertMessageId } from "./threading";
 
 /**
@@ -94,7 +94,7 @@ export function appendToMailbox(input: AppendToMailboxInput): Promise<AppendToMa
     assertMessageId(messageId);
   } catch (err) {
     // Wrap so a malformed messageId dead-letters instead of burning retries as a plain Error.
-    return Promise.reject(new ImapPrimitiveNonRetriableError((err as Error).message));
+    return Promise.reject(new ImapNonRetriableError((err as Error).message));
   }
 
   // Canonicalize the key so the lane matches the probe's equality semantics.
@@ -174,7 +174,7 @@ async function probeMessageId(
   try {
     // Fail closed: silently skipping the probe would duplicate the copy.
     if (!client.mailbox) {
-      throw new ImapPrimitiveNonRetriableError(
+      throw new ImapNonRetriableError(
         "IMAP precondition violated: mailbox lock held but client.mailbox is unset",
       );
     }
@@ -190,7 +190,7 @@ async function probeMessageId(
     // imapflow's search() returns false (Promise<number[] | false>) on session-state
     // failure despite the lock - non-retriable, dead-letter immediately.
     if (candidateUids === false) {
-      throw new ImapPrimitiveNonRetriableError(
+      throw new ImapNonRetriableError(
         "IMAP SEARCH returned false on a non-empty mailbox (probe failed)",
       );
     }
