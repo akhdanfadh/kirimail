@@ -1,0 +1,218 @@
+import type { Meilisearch } from "@kirimail/search";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { Job, PgBoss } from "pg-boss";
+
+import { db, getEmailAccountById, getMessageWithOwnership } from "@kirimail/db";
+import * as schema from "@kirimail/db/schema";
+import { fetchMessageBody, type ImapConnectionCache } from "@kirimail/mail";
+import {
+  getMessageDoc,
+  MESSAGES_INDEX_UID,
+  searchClient,
+  upsertMessageBody,
+} from "@kirimail/search";
+
+import { imapCache } from "../caches";
+import { resolveImapCredentials } from "../credentials";
+
+type Db = NodePgDatabase<typeof schema>;
+
+export const FETCH_BODY_QUEUE = "fetch-body";
+
+// ---------------------------------------------------------------------------
+// Queue Registration
+// ---------------------------------------------------------------------------
+
+/** Job payload for the fetch-body. DB row is the source of truth; nothing else is carried. */
+export interface FetchBodyJobData {
+  messageId: string;
+}
+
+/** Registration options for {@link registerFetchBody}. */
+export interface RegisterFetchBodyOptions {
+  /** Meilisearch index uid the body upsert targets. Defaults to {@link MESSAGES_INDEX_UID}. */
+  indexUid?: string;
+}
+
+/** Register the fetch-body queue and handler. */
+export async function registerFetchBody(
+  boss: PgBoss,
+  opts: RegisterFetchBodyOptions = {},
+): Promise<void> {
+  await boss.createQueue(FETCH_BODY_QUEUE, {
+    retryLimit: 3,
+    retryDelay: 30,
+    retryBackoff: true,
+    // Body fetch + per-part download for a message with several text parts can run
+    // minutes on slow connections. 5 minutes should covers the worst realistic case.
+    expireInSeconds: 300,
+  });
+
+  await boss.work(
+    FETCH_BODY_QUEUE,
+    // localConcurrency let us run body-fetches for multiple accounts in parallel.
+    // 3 is conservative starting point as IMAP servers may throttle aggressive parallel reads.
+    { batchSize: 1, localConcurrency: 3 },
+    async (jobs: Job<FetchBodyJobData>[]): Promise<void> => {
+      const job = jobs[0]!;
+      try {
+        await handleFetchBody({
+          db,
+          meili: searchClient,
+          imapCache,
+          messageId: job.data.messageId,
+          indexUid: opts.indexUid ?? MESSAGES_INDEX_UID,
+        });
+      } catch (err) {
+        // TODO: Classify deterministic IMAP failures (auth rotated, mailbox renamed/deleted,
+        // BAD on FETCH) as non-retriable, mirroring the ImapPrimitiveNonRetriableError
+        // pattern in commands.ts + imap-command.ts. fetchMessageBody currently surfaces raw
+        // imapflow errors, so deterministic failures burn 3 retries x ~30/60/120s backoff
+        // (~3.5 min) per job - on a rotated-credential account with 10K messages, that is
+        // ~580 hours of wasted retry budget AND blocks healthy accounts from the same
+        // localConcurrency slot. Build before real users hit rotated creds.
+        console.error(`[${FETCH_BODY_QUEUE}] message ${job.data.messageId} failed:`, err);
+        throw err;
+      }
+    },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Command Execution
+// ---------------------------------------------------------------------------
+
+/** Per-text-part byte ceiling. Paired with {@link MAX_BYTES_TEXT_TOTAL}. */
+const MAX_BYTES_TEXT_PART = 2 * 1024 * 1024;
+/**
+ * Per-message aggregate ceiling across all text parts.
+ *
+ * 4 MiB is enough for two full-size parts (text/plain + text/html, the common
+ * multipart/alternative shape) or many small parts in a digest. Once exhausted,
+ * the primitive stops downloading further text leaves and returns what it has.
+ */
+const MAX_BYTES_TEXT_TOTAL = 4 * 1024 * 1024;
+
+/** Runtime dependencies for {@link handleFetchBody}. */
+export interface FetchBodyDeps {
+  db: Db;
+  meili: Meilisearch;
+  imapCache: ImapConnectionCache;
+  messageId: string;
+  indexUid: string;
+}
+
+/**
+ * Body-fetch worker for one message: pulls text MIME parts via {@link fetchMessageBody}
+ * and partial-merges `{bodyText, bodyHtml}` onto the existing Meilisearch doc.
+ *
+ * Idempotent under at-least-once delivery: re-running for the same message id is
+ * harmless and free, because the pre-IMAP guard below short-circuits once body
+ * fields are populated - duplicate dispatch doesn't re-pull bytes off IMAP.
+ *
+ * Several early-returns are benign races or work-already-done, not failures.
+ */
+export async function handleFetchBody(deps: FetchBodyDeps): Promise<void> {
+  const { db, meili, imapCache, messageId, indexUid } = deps;
+
+  const row = await getMessageWithOwnership(db, messageId);
+  if (!row) {
+    // Benign race with delete (sync removed the row, or `mailbox.deleted`
+    // cascade fired). The corresponding `message.deleted` event will clean
+    // up the Meilisearch doc on the dispatcher side.
+    console.log(`[${FETCH_BODY_QUEUE}] message ${messageId} not found, skipping`);
+    return;
+  }
+  if (row.message.encrypted) {
+    // End-to-end encrypted (PGP/MIME or S/MIME) - we'd be indexing ciphertext
+    // or the unparseable cleartext envelope wrapper. The `encrypted: true` flag
+    // on the existing Meilisearch doc is the UI's signal to render a placeholder;
+    // absent body fields is the correct state.
+    console.log(`[${FETCH_BODY_QUEUE}] message ${messageId} is encrypted, skipping`);
+    return;
+  }
+
+  // Pre-IMAP guard: a Meilisearch round-trip avoids pulling MB of body bytes off
+  // IMAP when the doc is already gone (deletion landed before we started) or
+  // already body-indexed (duplicate dispatch). The late guard further down
+  // catches the residual race where deletion lands DURING the IMAP fetch.
+  const preExisting = await getMessageDoc(meili, messageId, indexUid);
+  if (preExisting === null) {
+    console.log(
+      `[${FETCH_BODY_QUEUE}] meilisearch doc for message ${messageId} not found, skipping`,
+    );
+    return;
+  }
+  // NOTE: if a future change writes only one field (a partial-stage backfill)
+  // or adds a new body field (e.g. bodyMarkdown), this branch must be updated
+  // - otherwise duplicate runs will silently skip messages that were meant to be filled.
+  if (preExisting.bodyText !== undefined || preExisting.bodyHtml !== undefined) {
+    console.log(
+      `[${FETCH_BODY_QUEUE}] message ${messageId} body fields already populated, skipping`,
+    );
+    return;
+  }
+
+  const account = await getEmailAccountById(db, row.emailAccountId);
+  if (!account) {
+    // Race: another transaction may have deleted the email account between the
+    // message-row read above and this lookup. The cascade also wipes our message row,
+    // but `row` is already an in-memory snapshot pointing at a now-gone account id.
+    console.warn(
+      `[${FETCH_BODY_QUEUE}] account ${row.emailAccountId} not found for message ${messageId}, skipping`,
+    );
+    return;
+  }
+
+  const creds = resolveImapCredentials(account);
+  const result = await imapCache.execute(row.emailAccountId, creds, (client) =>
+    fetchMessageBody(client, {
+      mailbox: row.mailboxPath,
+      uid: row.message.providerUid,
+      maxBytesPerPart: MAX_BYTES_TEXT_PART,
+      maxBytesTotal: MAX_BYTES_TEXT_TOTAL,
+    }),
+  );
+  if (result.uidNotFound) {
+    // UID is no longer on the server (message moved/expunged between sync and now). The next
+    // sync's reconciliation will emit `message.deleted` and the Meilisearch doc cleanup follows.
+    console.warn(
+      `[${FETCH_BODY_QUEUE}] message ${messageId} (uid ${row.message.providerUid}) not found on server, skipping`,
+    );
+    return;
+  }
+
+  // TODO: When bodyHtml is set but bodyText is not (HTML-only mail with no text/plain
+  // alternative - common in mailing lists and marketing), derive bodyText from the HTML
+  // via a small html-to-text helper. Without this, the message body is unsearchable:
+  // bodyHtml is stored only for UI rendering (not in `searchableAttributes`, see
+  // @kirimail/search/config.ts), so a search for content unique to the HTML body
+  // returns zero hits. Meilisearch has no first-party HTML stripping, so the derivation
+  // is ours to do. Deferred; multipart/alternative covers the common case today.
+  const { bodyText, bodyHtml } = result;
+  if (bodyText === undefined && bodyHtml === undefined) {
+    // BODYSTRUCTURE had no text/plain or text/html leaves. Image-only messages,
+    // exotic MIME shapes, or every text leaf was a `Content-Disposition: attachment`
+    // file (handled by parseAttachments, not body indexing).
+    console.log(
+      `[${FETCH_BODY_QUEUE}] message ${messageId} has no text/plain or text/html parts, skipping`,
+    );
+    return;
+  }
+
+  // Late orphan guard: a delete that landed during our IMAP fetch (between
+  // the pre-IMAP guard and now) would let upsertMessageBody resurrect the
+  // doc with body fields but no tenant fields - invisible to scoped
+  // queries, unreachable by deleteMessagesBy* primitives. Re-checking
+  // shrinks the race to the gap between this read and the upsert below.
+  // See NOTE in the @kirimail/search/primitives.ts.
+  const existing = await getMessageDoc(meili, messageId, indexUid);
+  if (existing === null) {
+    console.log(
+      `[${FETCH_BODY_QUEUE}] meilisearch doc for message ${messageId} no longer exists, skipping`,
+    );
+    return;
+  }
+
+  await upsertMessageBody(meili, messageId, { bodyText, bodyHtml }, indexUid);
+}

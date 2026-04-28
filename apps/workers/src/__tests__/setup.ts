@@ -94,6 +94,18 @@ name = "dispatchuser"
 secret = "testpass"
 email.0000 = "dispatchuser@localhost"
 
+[directory."memory".principals.0008]
+class = "individual"
+name = "fbuser"
+secret = "testpass"
+email.0000 = "fbuser@localhost"
+
+[directory."memory".principals.0009]
+class = "individual"
+name = "fbe2euser"
+secret = "testpass"
+email.0000 = "fbe2euser@localhost"
+
 # SMTP submission config for integration tests. must-match-sender=false lets
 # the envelope sender diverge from the authenticated principal's stored email
 # (our helpers use the principal name as fromAddress, not the email). The

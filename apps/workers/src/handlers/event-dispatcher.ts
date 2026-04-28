@@ -25,6 +25,10 @@ import {
   deleteMessagesByMailbox,
 } from "@kirimail/search";
 
+import type { FetchBodyJobData } from "./fetch-body";
+
+import { FETCH_BODY_QUEUE } from "./fetch-body";
+
 type Db = NodePgDatabase<typeof schema>;
 
 export const EVENT_DISPATCHER_QUEUE = "event-dispatcher";
@@ -67,6 +71,7 @@ export async function registerEventDispatcher(
     const result = await handleEventDispatcher({
       db,
       meili: searchClient,
+      boss,
       indexUid,
       batchSize,
     });
@@ -102,6 +107,18 @@ export async function registerEventDispatcher(
 // ---------------------------------------------------------------------------
 
 /**
+ * Thrown when an infra-side step inside `handleMessageSynced` (or its siblings)
+ * fails for a reason that is NOT specific to the event being processed, e.g.,
+ * a pg-boss failure when enqueueing `fetch-body`.
+ */
+export class EventDispatcherInfraError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = "EventDispatcherInfraError";
+  }
+}
+
+/**
  * Name used to track this consumer's progress in `domain_event_consumers`.
  * Don't rename once deployed - a new name = a fresh consumer that
  * re-processes every event from scratch.
@@ -129,6 +146,7 @@ type HandledEventType = (typeof HANDLED_EVENT_TYPES)[number];
 export interface EventDispatcherDeps {
   db: Db;
   meili: Meilisearch;
+  boss: PgBoss;
   indexUid: string;
   batchSize: number;
 }
@@ -203,11 +221,13 @@ export async function handleEventDispatcher(
       if (
         err instanceof MeilisearchRequestError ||
         err instanceof MeilisearchRequestTimeOutError ||
-        err instanceof MeilisearchTaskTimeOutError
+        err instanceof MeilisearchTaskTimeOutError ||
+        err instanceof EventDispatcherInfraError
       ) {
-        // Distinguish Meilisearch infra error (connection, timeout, task supervision)
-        // from per-event errors. Infra errors abort the tick so the next trigger retries
-        // cleanly; per-event errors stamp `last_error` and the batch continues.
+        // Distinguish infra error (Meilisearch connection/timeout/task supervision,
+        // pg-boss enqueue failure) from per-event errors. Infra errors abort the
+        // tick so the next trigger retries cleanly; per-event errors stamp
+        // `last_error` and the batch continues.
         console.error(
           `[${EVENT_DISPATCHER_QUEUE}] infra error on event ${event.id}, aborting tick:`,
           err,
@@ -271,11 +291,11 @@ export async function handleEventDispatcher(
 
 /**
  * Compose + write the sync-stage doc (headers + attachment metadata) for a
- * synced message. Row-not-found is an idempotent no-op (message deleted
- * between emission and dispatch).
+ * synced message, then enqueue body indexing (if not encrypted). Row-not-found
+ * is an idempotent no-op (message deleted between emission and dispatch).
  */
 async function handleMessageSynced(deps: EventDispatcherDeps, messageId: string): Promise<void> {
-  const { db, meili, indexUid } = deps;
+  const { db, meili, boss, indexUid } = deps;
   const row = await getMessageWithOwnership(db, messageId);
   if (!row) {
     // Benign race: a sync deleted this row between emit time and now.
@@ -309,6 +329,19 @@ async function handleMessageSynced(deps: EventDispatcherDeps, messageId: string)
     attachments: row.message.attachments,
   };
   await upsertSyncedMessage(meili, syncedMessage, indexUid);
+
+  if (row.message.encrypted) return;
+  try {
+    await boss.send(FETCH_BODY_QUEUE, { messageId } satisfies FetchBodyJobData);
+  } catch (err) {
+    // pg-boss enqueue failures aren't event-specific. Wrap as infra so the tick
+    // aborts and retries (upsertSyncedMessage is idempotent) instead of burning
+    // consecutive_failures and silently leaving bodies unindexed.
+    throw new EventDispatcherInfraError(
+      `failed to enqueue ${FETCH_BODY_QUEUE} for message ${messageId}`,
+      err,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

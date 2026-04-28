@@ -28,9 +28,10 @@ import { randomUUID } from "node:crypto";
 import { PgBoss } from "pg-boss";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { registerEventDispatcher, registerSyncEmailAccount } from "..";
+import { registerEventDispatcher, registerFetchBody, registerSyncEmailAccount } from "..";
 import {
   EVENT_DISPATCHER_QUEUE,
+  EventDispatcherInfraError,
   handleEventDispatcher,
   MEILISEARCH_CONSUMER_NAME,
 } from "../event-dispatcher";
@@ -257,6 +258,43 @@ function meiliUnknownErrorClass(): Meilisearch {
 }
 
 // ---------------------------------------------------------------------------
+// Fake boss for direct-invocation tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Records every `boss.send(name, data)` call so direct-invocation tests can
+ * assert that `fetch-body` was (or wasn't) enqueued for a given message
+ * without standing up a real pg-boss instance.
+ */
+interface FakeBoss extends PgBoss {
+  sends: Array<{ name: string; data: unknown }>;
+}
+
+function createFakeBoss(): FakeBoss {
+  const sends: Array<{ name: string; data: unknown }> = [];
+  return {
+    sends,
+    send: async (name: string, data?: unknown) => {
+      sends.push({ name, data });
+      return "fake-job-id";
+    },
+  } as unknown as FakeBoss;
+}
+
+/**
+ * pg-boss stub whose `send` always rejects with the given error. Exercises the
+ * dispatcher's infra-error branch: a pg-boss-side failure during `fetch-body`
+ * enqueue must abort the tick, NOT count toward the event's per-consumer poison threshold.
+ */
+function createFailingBoss(err: Error): PgBoss {
+  return {
+    send: async () => {
+      throw err;
+    },
+  } as unknown as PgBoss;
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -281,6 +319,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -321,6 +360,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -340,6 +380,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     await handleEventDispatcher({
       db,
       meili: poisoning,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -371,6 +412,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili: meiliWithPoison(meili, poison.messageId),
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -392,6 +434,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili: meiliAllPoison(),
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: poisonBatch,
     });
@@ -418,6 +461,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
         await handleEventDispatcher({
           db,
           meili: meiliAllPoison(),
+          boss: createFakeBoss(),
           indexUid: TEST_INDEX_UID,
           batchSize: TEST_BATCH_SIZE,
         });
@@ -444,6 +488,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili: meiliUnknownErrorClass(),
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -463,6 +508,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
       handleEventDispatcher({
         db,
         meili: meiliAllInfraDown(),
+        boss: createFakeBoss(),
         indexUid: TEST_INDEX_UID,
         batchSize: TEST_BATCH_SIZE,
       }),
@@ -472,6 +518,30 @@ describe("handleEventDispatcher (direct invocation)", () => {
     // next trigger will retry. The "re-offer until consumed" property is
     // tested at the repo layer; here we only assert the dispatcher
     // doesn't write anything on the failure path.
+    expect(await consumerRow(eventId)).toBeUndefined();
+  });
+
+  it("rethrows pg-boss enqueue failures as infra without burning the event's poison budget", async () => {
+    // pg-boss-side failure during fetch-body enqueue (DB blip on `pgboss.job` insert,
+    // transient pool exhaustion) is unrelated to the event being processed. Without
+    // the EventDispatcherInfraError wrap, the failure would fall through to the per-event
+    // `markDomainEventFailed` arm and bump consecutive_failures - eventually making the
+    // event invisible to dispatcher scans, leaving the header-only doc in Meilisearch
+    // with body fields permanently unindexed.
+    const { messageId } = await seedMessageRow({ subject: "Infra-error test" });
+    const eventId = await seedSyncedEvent(messageId);
+
+    await expect(
+      handleEventDispatcher({
+        db,
+        meili,
+        boss: createFailingBoss(new Error("pg-boss simulated failure")),
+        indexUid: TEST_INDEX_UID,
+        batchSize: TEST_BATCH_SIZE,
+      }),
+    ).rejects.toBeInstanceOf(EventDispatcherInfraError);
+
+    expect(await getMessageDoc(meili, messageId, TEST_INDEX_UID)).not.toBeNull();
     expect(await consumerRow(eventId)).toBeUndefined();
   });
 
@@ -492,6 +562,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -522,6 +593,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -586,6 +658,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili: racingMeili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -634,6 +707,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -659,6 +733,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -673,6 +748,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const second = await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -767,6 +843,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -794,6 +871,7 @@ describe("handleEventDispatcher (direct invocation)", () => {
     const result = await handleEventDispatcher({
       db,
       meili,
+      boss: createFakeBoss(),
       indexUid: TEST_INDEX_UID,
       batchSize: TEST_BATCH_SIZE,
     });
@@ -844,8 +922,8 @@ describe("event-dispatcher via pg-boss (post-sync trigger)", () => {
     const boss = createTestBoss();
     await boss.start();
     try {
-      // Order matters: dispatcher queue must exist before sync handler
-      // tries to enqueue into it.
+      // Registration order matches production startup, each step's enqueue target must already exist.
+      await registerFetchBody(boss, { indexUid: TEST_INDEX_UID });
       await registerEventDispatcher(boss, { indexUid: TEST_INDEX_UID, batchSize: TEST_BATCH_SIZE });
       await registerSyncEmailAccount(boss);
 
@@ -903,6 +981,7 @@ describe("event-dispatcher via pg-boss (post-sync trigger)", () => {
     const boss = createTestBoss();
     await boss.start();
     try {
+      await registerFetchBody(boss, { indexUid: TEST_INDEX_UID });
       await registerEventDispatcher(boss, { indexUid: TEST_INDEX_UID, batchSize: TEST_BATCH_SIZE });
       await registerSyncEmailAccount(boss);
 
@@ -1018,6 +1097,7 @@ describe("event-dispatcher via pg-boss (post-sync trigger)", () => {
     const boss = createTestBoss();
     await boss.start();
     try {
+      await registerFetchBody(boss, { indexUid: TEST_INDEX_UID });
       await registerEventDispatcher(boss, { indexUid: TEST_INDEX_UID, batchSize: TEST_BATCH_SIZE });
       await registerSyncEmailAccount(boss);
 
@@ -1126,6 +1206,7 @@ describe("event-dispatcher via pg-boss (backlog drain)", () => {
     const boss = createTestBoss();
     await boss.start();
     try {
+      await registerFetchBody(boss, { indexUid: TEST_INDEX_UID });
       await registerEventDispatcher(boss, { indexUid: TEST_INDEX_UID, batchSize: 2 });
 
       await boss.send(EVENT_DISPATCHER_QUEUE, {});

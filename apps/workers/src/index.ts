@@ -6,6 +6,7 @@ import { workerEnv } from "./env";
 import {
   registerAppendSent,
   registerEventDispatcher,
+  registerFetchBody,
   registerImapCommand,
   registerOutboundReaper,
   registerSendMessage,
@@ -44,6 +45,10 @@ export async function startWorkers(): Promise<WorkerHandle> {
   // Queue registrations - stop boss if registration fails partway through.
   let idlePool: IdlePool | null = null;
   try {
+    // fetch-body must register before event-dispatcher: the dispatcher
+    // enqueues fetch-body jobs on every successful header upsert, and
+    // boss.send fails for a queue that doesn't exist.
+    await registerFetchBody(boss);
     // event-dispatcher must register before sync-email-account: the sync
     // handler enqueues dispatcher ticks on success and boss.send fails for
     // a queue that doesn't exist.
